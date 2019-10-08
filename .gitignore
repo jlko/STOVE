@@ -1,0 +1,33 @@
+# MacOS
+.DS_Store
+
+# Sublime
+._*
+
+# Data
+downloads/
+experiments
+data
+
+# Jupyter Notebook
+*.ipynb_checkpoints
+*.ipynb
+
+# VIM
+*.swp
+
+# dotenv
+.env
+
+# virtualenv
+.venv
+venv/
+ENV/
+
+rl/summary/*
+rl/models/*
+
+# Caches
+*.swp
+__pycache__/*
+
