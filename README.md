@@ -1,4 +1,5 @@
 # Structured Object-Aware Physics Prediction for Video Modelling and Planning
+See [arxiv.org/1910.02425](https://arxiv.org/abs/1910.02425) for further information.
 
 ## Example Animations
 ### Video Prediction
@@ -94,3 +95,14 @@ Also an actioned-conditioned world model is trained on the avoidance task.
 
 ## Interactive
 `interactive.py` allows you to either play in a live environment or a model simulation of the environment.
+
+## Citation
+Please cite our work here and at [arxiv.org/1910.02425](https://arxiv.org/abs/1910.02425) as 
+```
+@article{kossen2019structured,
+    title={Structured Object-Aware Physics Prediction for Video Modeling and Planning},
+    author={Jannik Kossen and Karl Stelzner and Marcel Hussing and Claas Voelcker and Kristian Kersting},
+    year={2019},
+    journal={arXiv:1910.02425},
+}
+```
