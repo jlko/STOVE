@@ -24,10 +24,12 @@ data
 venv/
 ENV/
 
-rl/summary/*
-rl/models/*
+# RL folders
+model/rl/summary/*
+model/rl/models/*
 
 # Caches
 *.swp
 __pycache__/*
 
+.idea/*
