@@ -1,85 +1,107 @@
+"""Contains class for model training."""
+
 import os
 import itertools
 import time
-
 import numpy as np
+
 import torch
 import torch.optim as optim
 from torch import nn
-from torch import autograd
 from torch.utils.data import DataLoader
-from torch.distributions import Uniform
 
-from ..visualize import plot_positions, animate, plot_boxes, plot_grad_flow, plot_patches, plot_bg
+from ..utils.visualize import (
+    animate, plot_boxes, plot_grad_flow, plot_patches, plot_bg)
 from ..utils.utils import ExperimentLogger
-from ..utils import utils
 
-class Trainer:
-    def __init__(self, config, net, train_dataset, test_dataset):
-        self.net = net
-        self.params = net.parameters()
+
+class AbstractTrainer:
+    """Abstract trainer class.
+
+    Exists, s.t. Trainer can share code between STOVE and supervised approach.
+    """
+    def __init__(self, config, stove, train_dataset, test_dataset):
+        """Set up abstract trainer."""
+        self.stove = stove
+        self.params = stove.parameters()
+
+        if config.debug_test_mode:
+            config.print_every = 1
+            config.plot_every = 1
+
         self.c = config
 
-        self.dataloader = DataLoader(train_dataset,
-                                     batch_size=self.c.batch_size,
-                                     shuffle=True,
-                                     num_workers=self.c.num_workers,
-                                     drop_last=True)
-
-        self.logger = ExperimentLogger(self.c)
-
-        if test_dataset is not None:
-            self.test_dataset = test_dataset
-            self.test_dataloader = DataLoader(test_dataset,
-                                              batch_size=self.c.batch_size,
-                                              shuffle=True,
-                                              num_workers=4,
-                                              drop_last=True)
+        # implemented as property, s.t. train_dataset can easily be overwritten
+        # from the outside for mcts loop training
+        self.dataloader = train_dataset
+        self.test_dataset = test_dataset
+        self.test_dataloader = DataLoader(
+            test_dataset,
+            batch_size=self.c.batch_size,
+            shuffle=True,
+            num_workers=4,
+            drop_last=True)
 
         self.optimizer = optim.Adam(
-            self.net.parameters(),
+            self.stove.parameters(),
             lr=self.c.learning_rate,
             amsgrad=self.c.debug_amsgrad)
 
-        if self.c.load_supair is not None:
-            self.load_supair()
+        if self.c.load_encoder is not None:
+            self.load_encoder()
 
         if not self.c.supair_grad:
-            # may not even be necessary
-            self.disable_supair_grad()
+            self.disable_encoder_grad()
 
-        self.epoch_start, self.step_start = None, None
+        # if we restore from checkpoint, also restore epoch and step
+        self.epoch_start, self.step_start = 0, 0
         if self.c.checkpoint_path is not None:
             self.load()
 
-        self.z_types = ['z', 'z_sup', 'z_vin'] if not self.c.supair_only else ['z']
+    @property
+    def dataloader(self):
+        """Return train_dataset if set already."""
+        return self._train_dataset
 
-        if self.c.action_conditioned:
-            if not self.c.debug_mse:
-                self.reward_loss = nn.BCELoss()
-            else:
-                self.reward_loss = nn.MSELoss()
-        else:
-            self.reward_loss = lambda x, y: 0
+    @dataloader.setter
+    def dataloader(self, train_dataset):
+        """Set train_dataset by wrapping DataLoader."""
+        self._train_dataset = DataLoader(
+            train_dataset,
+            batch_size=self.c.batch_size,
+            shuffle=True,
+            num_workers=self.c.num_workers,
+            drop_last=True)
 
     def save(self, epoch, step):
+        """Save model dict, optimizer and progress indicator."""
         path = os.path.join(self.logger.exp_dir, "checkpoint")
+
         torch.save({
             'epoch': epoch,
             'step': step,
-            'model_state_dict': self.net.state_dict(),
+            'model_state_dict': self.stove.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            }, path + '_{}'.format(step))
+
+
+        torch.save({
+            'epoch': epoch,
+            'step': step,
+            'model_state_dict': self.stove.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             }, path)
+
         print('Parameters saved to {}'.format(self.logger.exp_dir))
 
     def load(self):
-
+        """Load model dict from checkpoint."""
         checkpoint = torch.load(
             self.c.checkpoint_path, map_location=self.c.device)
 
         # stay compatible with old loading
         if 'model_state_dict' in checkpoint.keys():
-            self.net.load_state_dict(checkpoint['model_state_dict'])
+            self.stove.load_state_dict(checkpoint['model_state_dict'])
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             epoch = checkpoint['epoch']
             step = checkpoint['step']
@@ -87,76 +109,132 @@ class Trainer:
             self.step_start = step
 
         else:
-            self.net.load_state_dict(checkpoint)
+            self.stove.load_state_dict(checkpoint)
 
         print('Parameters loaded from {}.'.format(self.c.checkpoint_path))
 
-
-    def load_supair(self):
-        """ Load weights of supair. Right now this does not! load all weights of checkpoint.
+    def load_encoder(self):
+        """Load weights of encoder.
 
         Adapted from discuss.pytorch.org/t/23962.
         """
-        pretrained_dict = torch.load(self.c.load_supair, map_location=self.c.device)
+        pretrained_dict = torch.load(
+            self.c.load_encoder, map_location=self.c.device)
+        pretrained_dict = pretrained_dict['model_state_dict']
 
-        if 'model_state_dict' in pretrained_dict.keys():
-            pretrained_dict = pretrained_dict['model_state_dict']            
-
-        model_dict = self.net.state_dict()
-
-        # 1. filter out unnecessary keys
-        # only load spn
-        pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict and any(i in k for i in ['spn', 'encoder'])}
+        model_dict = self.stove.state_dict()
+        # 1. filter out unnecessary keys, only load spn
+        pretrained_dict = {
+            k: v for k, v in pretrained_dict.items()
+            if k in model_dict and 'encoder' in k}
 
         # 2. overwrite entries in the existing state dict
         model_dict.update(pretrained_dict)
 
         # 3. load the new state dict
-        self.net.load_state_dict(model_dict)
+        self.stove.load_state_dict(model_dict)
 
-        print('Successfully loaded the following supair parameters from checkpoint {}:'.format(
-            self.c.load_supair))
+        print('Loaded the following supair parameters from {}:'.format(
+            self.c.load_encoder))
         print(pretrained_dict.keys())
 
     def disable_supair_grad(self):
-        for p in self.net.obj_spn.parameters():
+        """Disable gradient for SuPAIR if desired."""
+        for p in self.stove.obj_spn.parameters():
             p.requires_grad = False
-        for p in self.net.bg_spn.parameters():
+        for p in self.stove.bg_spn.parameters():
             p.requires_grad = False
-        for p in self.net.encoder.parameters():
+        for p in self.stove.encoder.parameters():
             p.requires_grad = False
-        for n, p in self.net.named_parameters():
-            print('gradients for ', n, p.requires_grad)\
+        for n, p in self.stove.named_parameters():
+            print('Gradients for {} enabled: {}'.format(n, p.requires_grad))
 
-    def prediction_error(
-        self, predicted, true,
-        return_velocity=True, return_id_swaps=True, return_full=False,
-        return_matched=False, level='sequence'):
-        """Loss of predicted position by encoder.
+    def prediction_error(self):
+        """Abstract method."""
+        raise ValueError('Needs to be overwritten by derived class.')
 
-        :param predicted: shape (n, T, o, 4)
-        :param true: shape (n, T, o, 4). Positions are on [0:2], velocities on
-        [2:4]. Can check since current_position + current_velocity = next_position.
-        :param level: Level at which to match the true and predicted object ordering
-            for Physics prediciton, we should only allow one global permutation of
-            the predicted object ordering over the sequence, since we want to be
-            aware of id swaps. For SuPair training, we may want to get the error
+    def plot_results(self):
+        """Abstract method."""
+        raise ValueError('Needs to be overwritten by derived class.')
+
+    def test(self):
+        """Abstract method."""
+        raise ValueError('Needs to be overwritten by derived class.')
+
+    def train(self):
+        """Abstract method."""
+        raise ValueError('Needs to be overwritten by derived class.')
+
+    def long_rollout(self):
+        """Abstract method."""
+        raise ValueError('Needs to be overwritten by derived class.')
 
 
-        Coordinate system of true is from [0, 10], for predicted in [-1, 1].
-        Scale true accordingly.
+class Trainer(AbstractTrainer):
+    """Trainer for model optimization.
+
+    Fully compatible with STOVE as well as action-conditioned STOVE.
+    """
+
+    def __init__(self, config, stove, train_dataset, test_dataset):
+        """Set up trainer.
+
+        This is conveniently called with main.py. Given a valid config, main.py
+        takes care of initalising the trainer, model and dataset.
+
+        Do not modify the config object.
+        """
+        super().__init__(config, stove, train_dataset, test_dataset)
+
+        self.logger = ExperimentLogger(self.c)
+
+        # differentiate between z from dynamics , z from supair, and
+        # combined z
+        self.z_types = ['z', 'z_sup', 'z_dyn'] if not self.c.supair_only else ['z']
+
+        if self.c.action_conditioned:
+            if not self.c.debug_mse:
+                self.reward_loss = nn.BCELoss()
+            else:
+                self.reward_loss = nn.MSELoss()
+
+
+    def prediction_error(self, predicted, true,
+                         return_velocity=True, return_id_swaps=True,
+                         return_full=False, return_matched=False,
+                         level='sequence'):
+        """Error of predicted positions and velocities against ground truth.
+
+        Args:
+            predicted (torch.Tensor), (n, T, o, 4): Stoves positions and
+                velocities.
+            true (torch.Tensor), (n, T, o, 4): Positions and velocities from env.
+            return_velocity (bool): Return velocity errors.
+            return_id_swaps (bool): Return percentage of id swaps over sequence.
+            return_full (bool): Return errors over T dimension.
+            return_matched (bool): Return permuted positions and velocities.
+            level (str): Set to 'sequence' or 'imgage'. Object orderings for a
+                sequence are not aligned, b/c model is unsupervised. Need to be
+                matched. Specify level at which to match the true and predicted
+                object ordering. For physics prediciton, we should only allow
+                one global permutation of the predicted object ordering over the
+                sequence, since we want id swaps to affect the error. For SuPair
+                (only) training, we want to get the error per image.
+
+        Returns:
+            res (dict): Results dictionary containing errors, as set by the
+                above flags.
+
         """
         if self.c.supair_only:
             return_velocity = False
             level = 'image'
+
         # use at moste the first 4 time values for assigning object ordering
         T = min(4, predicted.shape[1])
 
-        # ignore velocities (if available)
         pos_pred = predicted[..., :2]
-        # Transform true positions to scale of predicted.
-        # from visual inspection this seems to work best (ignore velocities)
-        pos_true = 2 * (true[..., :2] / 10.0) - 1.0
+        pos_true = true[..., :2]
 
         errors = []
         permutations = list(itertools.permutations(range(0, self.c.num_obj)))
@@ -167,24 +245,24 @@ class Trainer:
             # a given sequence!
 
             for perm in permutations:
-                errors += [torch.sqrt(((pos_pred[:, :T, perm] - pos_true[:, :T])**2).sum(-1)).mean((1, 2))]
-                # sum_k/T(sum_j/o(root(sum_i((x_i0-x_i1)**2))))
-                # sum_i over x and y coordinates -> root(sum squared) is distance of
-                # objects for that permutation. sum j is then over all objects in image
-                # and sum_k over all images in sequence. that way we do 1 assignment
-                # of objects over whole sequence! this loss will now punish id swaps
-                # over sequence. sum_j and _k are mean. st. we get the mean distance
-                # to true position
+                error = ((pos_pred[:, :T, perm] - pos_true[:, :T])**2).sum(-1)
+                error = torch.sqrt(error).mean((1, 2))
+                errors += [error]
+                """sum_k/T(sum_j/o(root(sum_i((x_i0-x_i1)**2))))
+                   sum_i over x and y coordinates -> root(sum squared) is
+                   distance of objects for that permutation. sum j is then over
+                   all objects in image and sum_k over all images in sequence.
+                   that way we do 1 assignment of objects over whole sequence!
+                   this loss will now punish id swaps over sequence. sum_j and
+                   _k are mean. st. we get the mean distance to true position
+                """
 
             # shape (n, o!)
             errors = torch.stack(errors, 1)
-
             # sum to get error per image
             _, idx = errors.min(1)
             # idx now contains a single winning permutation per sequence!
-
             selector = list(zip(range(idx.shape[0]), idx.cpu().tolist()))
-
             pos_matched = [pos_pred[i, :, permutations[j]] for i, j in selector]
             pos_matched = torch.stack(pos_matched, 0)
 
@@ -192,40 +270,43 @@ class Trainer:
             pos_pred_f = pos_pred.flatten(end_dim=1)
             pos_true_f = pos_true.flatten(end_dim=1)
             for perm in permutations:
-                errors += [torch.sqrt(((pos_pred_f[:, perm] - pos_true_f)**2).sum(-1)).mean((1))]
+                errors += [torch.sqrt(
+                    ((pos_pred_f[:, perm] - pos_true_f)**2).sum(-1)).mean((1))]
             errors = torch.stack(errors, 1)
             _, idx = errors.min(1)
             selector = list(zip(range(idx.shape[0]), idx.cpu().tolist()))
             pos_matched = [pos_pred_f[i, permutations[j]] for i, j in selector]
             pos_matched = torch.stack(pos_matched, 0)
             pos_matched = pos_matched.reshape(predicted[..., :2].shape)
+
         else:
             raise ValueError
 
         res = {}
         if not return_full:
-            min_errors = torch.sqrt(((pos_matched - pos_true)**2).sum(-1)).mean((1, 2))
+            min_errors = torch.sqrt(
+                ((pos_matched - pos_true)**2).sum(-1)).mean((1, 2))
             res['error'] = min_errors.mean().cpu()
             res['std_error'] = min_errors.std().cpu()
 
         else:
             # return error over sequence!
             # get correctly matched sequence
-            error_over_sequence = torch.sqrt(((pos_matched - pos_true)**2).sum(-1)).mean(-1)
+            error_over_sequence = torch.sqrt(
+                ((pos_matched - pos_true)**2).sum(-1)).mean(-1)
             res['error'] = error_over_sequence.mean(0).cpu()
             res['std_error'] = error_over_sequence.std(0).cpu()
 
         if return_velocity:
-
             # get velocities and transform
             vel_pred = predicted[..., 2:4]
-            vel_true = true[..., 2:4] / 10.0 * 2.0
 
             # get correctly matched velocities
             vel_matched = [vel_pred[i, :, permutations[j]] for i, j in selector]
             vel_matched = torch.stack(vel_matched, 0)
 
             # again. root of sum of squared distances per object. mean over image.
+            vel_true = true[..., 2:]
             v_errors = torch.sqrt(((vel_true - vel_matched)**2).sum(-1)).mean(-1)
 
             if not return_full:
@@ -243,7 +324,7 @@ class Trainer:
 
         if return_id_swaps:
             # Do min over img instead of over sequence. This is equiv to old
-            #  way of calculating error.
+            # way of calculating error.
             errors = []
             for perm in permutations:
                 # this is distance of object pairing
@@ -274,6 +355,10 @@ class Trainer:
         return res
 
     def plot_results(self, step_counter, images, prop_dict, future=False):
+        """Plot images of sequences and predicted bounding boxes.
+
+        Currently not in use.
+        """
         # just give first  sequences
         n_seq = self.c.n_plot_sequences
         plot_images = images[:n_seq].detach().cpu().numpy()
@@ -293,7 +378,6 @@ class Trainer:
             n_sequences=n_seq,
             future=future,
             save_path=save_path,
-            visdom=self.c.visdom
             )
 
         if self.c.debug_extend_plots:
@@ -304,52 +388,61 @@ class Trainer:
             marginalise_bg = prop_dict['marginalise_bg'].cpu().numpy()
             bg_loglik = prop_dict['bg_loglik'].cpu().numpy()
 
-            plot_bg(marginalise_bg, bg_loglik, n_sequences=n_seq, visdom=self.c.visdom)
+            plot_bg(marginalise_bg, bg_loglik, n_sequences=n_seq)
 
             patches = prop_dict['patches'].cpu().numpy()
             patches_ll = prop_dict['patches_loglik'].cpu().numpy()
 
-            plot_patches(patches, marg_patch, overlap, patches_ll, self.c, visdom=self.c.visdom)
+            plot_patches(patches, marg_patch, overlap, patches_ll, self.c)
 
-    def adjust_learning_rate(self, optimizer, value, epoch, step):
-        """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
-        #lr = self.c.learning_rate * (0.7 ** (epoch // 50))
+    def adjust_learning_rate(self, optimizer, value, step):
+        """Adjust learning rate during training."""
         lr = self.c.learning_rate * np.exp(-step / value)
-        lr = max(lr, 0.0002)
+        lr = max(lr, self.c.min_learning_rate)
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
 
-    def train(self):
+    def init_t(self, tensor):
+        """Move tensor to self.c.device and cast to self.c.dtype."""
+        return tensor.type(self.c.dtype).to(device=self.c.device)
+
+    def train(self, num_epochs=None):
+        """Run training loop.
+
+        Also takes care of intermediate testing and logging.
+        """
         print('Starting training for {}'.format(self.c.description))
         print('Only pretraining.' if self.c.supair_only else 'Full inference.')
-        # create some more rollouts at the end of training
-        skip = self.c.skip
 
-        start_epoch = self.epoch_start if self.epoch_start is not None else 0
-        step_counter = self.step_start if self.step_start is not None else 0
+        start_epoch = self.epoch_start
+        step_counter = self.step_start
 
-        if self.c.debug_bw:
-            assert self.c.channels == 1, ValueError('Warning: need to set channels to 1 in config be4')
         start = time.time()
         self.test(step_counter, start)
 
-        for epoch in range(start_epoch, self.c.num_epochs):
-            for i, data in enumerate(self.dataloader, 0):
+        if num_epochs is None:
+            num_epochs = self.c.num_epochs
 
-                if self.c.debug_anneal_lr:
-                    self.adjust_learning_rate(self.optimizer, self.c.debug_anneal_lr, epoch, step_counter)
-
+        for epoch in range(start_epoch, num_epochs):
+            for data in self.dataloader:
                 now = time.time() - start
                 step_counter += 1
-                images = data['present_images'].to(self.c.device).type(self.c.dtype)
+
+                if self.c.debug_anneal_lr:
+                    self.adjust_learning_rate(
+                        self.optimizer, self.c.debug_anneal_lr, step_counter)
+
+                # Load data
+                images = self.init_t(data['present_images'])
                 if self.c.action_conditioned:
-                    actions = data['present_actions'].to(self.c.device).type(self.c.dtype)
+                    actions = self.init_t(data['present_actions'])
                 else:
                     actions = None
 
+                # Model optimization
                 self.optimizer.zero_grad()
 
-                elbo, prop_dict, rewards = self.net(
+                elbo, prop_dict, rewards = self.stove(
                     images,
                     step_counter,
                     actions,
@@ -357,11 +450,14 @@ class Trainer:
                 min_ll = -1.0 * elbo
 
                 if self.c.action_conditioned:
-                    target_rewards = data['present_rewards'][:, self.c.skip:].to(self.c.device).type(self.c.dtype)
-                    mse_rewards = self.reward_loss(rewards.flatten(), target_rewards.flatten())
+                    target_rewards = data['present_rewards'][:, self.c.skip:]
+                    target_rewards = self.init_t(target_rewards)
+                    mse_rewards = self.reward_loss(
+                        rewards.flatten(), target_rewards.flatten())
 
                     if self.c.debug_reward_rampup is not False:
-                        reward_weight = min(1, step_counter/self.c.debug_reward_rampup)
+                        reward_weight = min(
+                            1, step_counter/self.c.debug_reward_rampup)
                     else:
                         reward_weight = 1
 
@@ -373,12 +469,12 @@ class Trainer:
                 min_ll.backward()
 
                 if self.c.debug_gradient_clip:
-                    torch.nn.utils.clip_grad_norm_(self.net.parameters(), 1)
+                    torch.nn.utils.clip_grad_norm_(self.stove.parameters(), 1)
                 self.optimizer.step()
 
                 # Plot examples
                 if step_counter % self.c.plot_every == 0:
-                    plot_grad_flow(self.net.named_parameters())
+                    plot_grad_flow(self.stove.named_parameters())
                     # full states only available after some steps
                     plot_images = images[:, self.c.skip:]
 
@@ -387,19 +483,19 @@ class Trainer:
                 # Print and log performance
                 if step_counter % self.c.print_every == 0:
                     self.error_and_log(
-                        elbo.item(), mse_rewards.item(), min_ll.item(), prop_dict, data, step_counter, now)
+                        elbo.item(), mse_rewards.item(), min_ll.item(),
+                        prop_dict, data, step_counter, now)
 
                 # Save parameters
                 if step_counter % self.c.save_every == 0:
                     self.save(epoch, step_counter)
 
-                if self.c.debug_code and not self.c.supair_only:
+                if self.c.debug_test_mode and not self.c.supair_only:
+                    self.save(0, 0)
                     self.test(step_counter, now)
-
-                if self.c.debug_test_mode:
                     break
 
-            # Test performance each epoch
+            # Test each epoch
             if not self.c.supair_only:
                 self.test(step_counter, start)
 
@@ -408,31 +504,52 @@ class Trainer:
             if self.c.debug_test_mode:
                 break
 
-        # create some more rollouts at the end of training
+        # Create some more rollouts at the end of training
         if not self.c.debug_test_mode:
             for idx in self.c.rollout_idxs:
                 self.long_rollout(step_counter, idx)
 
+        # Save model in final state
         if not self.c.nolog:
             self.save(epoch, step_counter)
             succ = os.path.join(self.logger.exp_dir, 'success')
             open(succ, 'w').close()
         print('Finished Training!')
 
-    def error_and_log(self, elbo, reward, min_ll, prop_dict, data, step_counter, now, add=''):
-        # Present
+    def error_and_log(self, elbo, reward, min_ll, prop_dict, data, step_counter,
+                      now, add=''):
+        """Format performance metrics and pass them to logger.
+
+        Args:
+            elbo (float): Elbo value.
+            reward (float): Mean reward value.
+            min_ll (float): Total loss.
+            prop_dict (dict): Dict from model containing further metrics.
+            data (dict): Current data dict. Needed to compute errors.
+            step_counter (int): Current step.
+            now (int): Time elapsed.
+            add (str): Identifier for log entries. Used if, e.g. this function
+                is called from test() rather than train().
+
+        """
         skip = self.c.skip
 
-        # align true data with timesteps for which we have predictions
-        perf_dict = {'step': step_counter, 'time': now, 'elbo': elbo, 'reward': reward, 'min_ll': min_ll}
+        # perf_dict contains performance values and will be passed to logger
+        perf_dict = {
+            'step': step_counter,
+            'time': now,
+            'elbo': elbo,
+            'reward': reward,
+            'min_ll': min_ll}
 
         # non z entries
         other_keys = list(filter(lambda x: x[0] != 'z', list(prop_dict.keys())))
         other_dict = {key: prop_dict[key] for key in other_keys}
         perf_dict.update(other_dict)
 
+        # get errors for each of the z types
         z_true = data['present_labels'][:, skip:]
-        z_true = z_true.to(self.c.device).type(self.c.dtype)
+        z_true = self.init_t(z_true)
         for z in self.z_types:
             if z in ['z', 'z_sup']:
                 # have scales and need to ignore for prediction_error
@@ -459,23 +576,33 @@ class Trainer:
 
     @torch.no_grad()
     def test(self, step_counter, start):
-        """Evaluate performance on test_data rollout.
+        """Evaluate performance on test data.
 
-        Also always create one long rollout gif.
+        Additionally
+            - tests performance of generative model, i.e. rollout performance,
+            - creates a rollout gif.
+
+        Args:
+            step_counter (int): Current step.
+            start (int): Time at beginning of training
 
         """
-        self.net.eval()
-        now = time.time() - start
+        self.stove.eval()
+        skip = self.c.skip
         for i, data in enumerate(self.test_dataloader, 0):
+            now = time.time() - start
 
-            present = data['present_images']
-            present = present.to(self.c.device).type(self.c.dtype)
+            # Load Data
+            present = self.init_t(data['present_images'])
             if self.c.action_conditioned:
-                actions = data['present_actions'].to(self.c.device).type(self.c.dtype)
+                actions = self.init_t(data['present_actions'])
+                future_actions = self.init_t(data['future_actions'])
+                future_rewards = self.init_t(data['future_rewards'])
             else:
-                actions = None
+                actions, future_actions, future_rewards = None, None, None
 
-            elbo, prop_dict, rewards = self.net(
+            # Propagate through model
+            elbo, prop_dict, rewards = self.stove(
                 present,
                 self.c.plot_every,
                 actions,
@@ -485,11 +612,13 @@ class Trainer:
             min_ll = -1.0 * elbo
 
             if self.c.action_conditioned:
-                target_rewards = data['present_rewards'][:, self.c.skip:].to(self.c.device).type(self.c.dtype)
-                mse_rewards = self.reward_loss(rewards.flatten(), target_rewards.flatten())
+                target_rewards = self.init_t(data['present_rewards'][:, skip:])
+                mse_rewards = self.reward_loss(
+                    rewards.flatten(), target_rewards.flatten())
 
                 if self.c.debug_reward_rampup is not False:
-                    reward_weight = min(1, step_counter/self.c.debug_reward_rampup)
+                    reward_weight = min(
+                        1, step_counter/self.c.debug_reward_rampup)
                 else:
                     reward_weight = 1
 
@@ -498,37 +627,34 @@ class Trainer:
             else:
                 mse_rewards = torch.Tensor([0])
 
+            # Log Errors
             self.error_and_log(
-                elbo.item(), mse_rewards.item(), min_ll.item(), prop_dict, data, step_counter, now, add='_roll')
-
-            if self.c.action_conditioned:
-                future_actions = data['future_actions'].to(self.c.device).type(self.c.dtype)
-                future_rewards = data['future_rewards'].to(self.c.device).type(self.c.dtype)
-            else:
-                future_actions = None
-                future_rewards = None
+                elbo.item(), mse_rewards.item(), min_ll.item(), prop_dict, data,
+                step_counter, now, add='_roll')
 
             if self.c.debug_core_appearance:
                 appearances = prop_dict['obj_appearances'][:, -1]
             else:
                 appearances = None
 
-            z_pred, rewards_pred = self.net.rollout(
+            z_pred, rewards_pred = self.stove.rollout(
                 prop_dict['z'][:, -1], actions=future_actions,
                 appearance=appearances)
 
             if self.c.action_conditioned:
-                # add code for rewards on rollout
-                # future rollout_error
-                future_reward_loss = self.reward_loss(rewards_pred.flatten(), future_rewards.flatten())
+                future_reward_loss = self.reward_loss(
+                    rewards_pred.flatten(), future_rewards.flatten())
             else:
                 future_reward_loss = 0
 
-            z_true = data['future_labels'].to(self.c.device).type(self.c.dtype)
+            z_true = self.init_t(data['future_labels'])
             error_dict = self.prediction_error(
                 z_pred[..., 2:], z_true)
 
-            perf_dict = {'step': step_counter, 'time': now, 'elbo': elbo, 'reward': future_reward_loss}
+            perf_dict = {
+                'step': step_counter, 'time': now, 'elbo': elbo,
+                'reward': future_reward_loss}
+
             perf_dict.update(error_dict)
             other_keys = list(filter(lambda x: x[0] != 'z', list(prop_dict.keys())))
             other_dict = {key: prop_dict[key] for key in other_keys}
@@ -537,21 +663,28 @@ class Trainer:
 
             self.logger.performance(perf_dict)
 
-            if self.c.debug_code:
+            if self.c.debug_test_mode:
                 break
             if i > 7:
                 break
 
         self.long_rollout(step_counter)
-        self.net.train()
+        self.stove.train()
 
     @torch.no_grad()
     def long_rollout(self, step_counter, idx=0, with_logging=True, actions=None):
         """Create one long rollout and save it as an animated GIF.
 
-        :param idx: Index of sequence in test data set.
+        Args:
+            step_counter (int): Current step.
+            idx (int): Index of sequence in test data set.
+            with_logging (int): Also save errors over sequences in csv for
+                rollout plots.
+            actions (n, T): Pass actions different from those in the test
+                set to see if model has understood actions.
+
         """
-        self.net.eval()
+        self.stove.eval()
 
         step = self.c.frame_step
         visible = self.c.num_visible
@@ -559,8 +692,13 @@ class Trainer:
         skip = self.c.skip
         long_rollout_length = self.c.num_frames // step - visible
 
-        total_images = self.test_dataset.total_img
-        total_labels = self.test_dataset.total_data
+        np_total_images = self.test_dataset.total_img
+        np_total_labels = self.test_dataset.total_data
+        # apply step and batch size once
+        total_images = self.init_t(torch.tensor(
+            np_total_images[:batch_size, ::step]))
+        total_labels = self.init_t(torch.tensor(
+            np_total_labels[:batch_size, ::step]))
 
         if self.c.action_conditioned:
             if actions is None:
@@ -568,9 +706,9 @@ class Trainer:
             else:
                 total_actions = actions
 
-            total_actions = total_actions[:batch_size, ::step]
+            total_actions = self.init_t(torch.tensor(
+                total_actions[:batch_size, ::step]))
             action_input = total_actions[:, :visible]
-            action_input = torch.tensor(action_input).to(self.c.device).type(self.c.dtype)
 
             total_rewards = self.test_dataset.total_rewards
             total_rewards = total_rewards[:batch_size, ::step]
@@ -578,56 +716,39 @@ class Trainer:
 
             # need some actions for rollout
             true_future_actions = total_actions[:, visible:(visible+long_rollout_length)]
-            true_future_actions = torch.tensor(true_future_actions).to(self.c.device).type(self.c.dtype)
-
             action_recon = total_actions[idx:idx+2, :(visible+long_rollout_length)]
-            action_recon = torch.tensor(action_recon, device=self.c.device, dtype=self.c.dtype)
 
         else:
             action_input = None
             true_future_actions = None
             action_recon = None
 
-        # apply step and batch size once
-        total_images = total_images[:batch_size, ::step]
-        total_labels = total_labels[:batch_size, ::step]
-
-
-        # First obtain reconstruction of input.
-        vin_input = total_images[:, :visible]
-        vin_input = torch.tensor(vin_input).to(self.c.device).type(self.c.dtype)
-
-        elbo, prop_dict2, rewards_recon = self.net(vin_input, self.c.plot_every, action_input)
-
+        # first obtain reconstruction of input.
+        stove_input = total_images[:, :visible]
+        _, prop_dict2, rewards_recon = self.stove(
+            stove_input, self.c.plot_every, action_input)
         z_recon = prop_dict2['z']
 
-        # Use last state to do rollout
+        # use last state to do rollout
         if self.c.debug_core_appearance:
             appearances = prop_dict2['obj_appearances'][:, -1]
         else:
             appearances = None
 
-        z_pred, rewards_pred = self.net.rollout(
+        z_pred, rewards_pred = self.stove.rollout(
             z_recon[:, -1], num=long_rollout_length, actions=true_future_actions,
             appearance=appearances)
 
-        # Plot first 8 imgs for each in batch.
-        true_future = total_images[:, visible:(visible+long_rollout_length)]
-        true_future = torch.tensor(true_future).to(self.c.device).type(self.c.dtype)
-        prop_dict2['z'] = z_pred[:, :8].detach()
-        # self.plot_results(step_counter, true_future[:, :8], prop_dict2, future=True)
-
-        # Plot complete sequence!
+        # assemble complete sequences as concat of reconstruction and prediction
         simu_recon = z_recon.detach()
         simu_rollout = z_pred.detach()
         simu = torch.cat([simu_recon, simu_rollout], 1)
 
         if not self.c.nolog and with_logging:
-            # Get prediction error over long sequence for loogging
-            real_labels = torch.Tensor(total_labels, device=self.c.device).type(self.c.dtype)
-            real_labels = real_labels[:, skip:(visible+long_rollout_length)]
+            # get prediction error over long sequence for loogging
+            real_labels = total_labels[:, skip:(visible+long_rollout_length)]
             error_dict = self.prediction_error(
-                simu[..., skip:], real_labels, return_velocity=True, return_full=True,
+                simu[..., 2:6], real_labels, return_velocity=True, return_full=True,
                 return_id_swaps=False)
 
             for name, data in error_dict.items():
@@ -636,39 +757,32 @@ class Trainer:
                     f.write(','.join(['{:.6f}'.format(i) for i in data])+'\n')
 
         # only select positions and translate to [0, 10] frame
-        simu = (simu[idx, :, :, 2:4] + 1.0) / 2.0 * self.c.coord_lim
-        simu = simu.detach().cpu().numpy()
+        simu = simu[idx, :, :, 2:4].detach().cpu().numpy()
 
         # also get a reconstruction of z along entire sequence
-        vin_input = total_images[idx:idx+2, :(visible+long_rollout_length)]
-        vin_input = torch.tensor(vin_input, device=self.c.device, dtype=self.c.dtype)
-
-        elbo, prop_dict3, recon_reward = self.net(vin_input, self.c.plot_every, actions=action_recon)
-
-        recon = (prop_dict3['z'][0, :, :, 2:4] + 1.0) / 2.0 * self.c.coord_lim
+        stove_input = total_images[idx:idx+2, :(visible+long_rollout_length)]
+        elbo, prop_dict3, recon_reward = self.stove(
+            stove_input, self.c.plot_every, actions=action_recon)
+        recon = prop_dict3['z'][0, :, :, 2:4]
         recon = recon.cpu().numpy()
         recon_reward = recon_reward.cpu().numpy()[0].squeeze()
 
-        # real = (total_labels[idx, self.c.skip:, :, :2] + 1.0) / 2.0 * 10.0
-        real = total_labels[idx, self.c.skip:, :, :2] / 10 * self.c.coord_lim
+        real = np_total_labels[idx, self.c.skip:, :, :2]
 
         if self.c.action_conditioned:
             # add rewards to gif
             rewards_model = torch.cat([rewards_recon, rewards_pred], 1).squeeze()[idx]
             rewards_model = rewards_model.detach().cpu().numpy()
 
-        # Make Gifs.
-        # we are loosing the first 2 images
-        if not self.c.nolog:
-            gif_path = os.path.join(self.logger.exp_dir, 'gifs')
-        else:
-            gif_path = os.path.join(self.c.experiment_dir, 'tmp')
+        # Make Gifs
+        gif_path = os.path.join(self.logger.exp_dir, 'gifs')
 
         print("Make GIFs in {}".format(gif_path))
 
         gifs = [real, simu, simu, recon, recon]
         if self.c.action_conditioned:
-            rewards = [real_rewards, rewards_model, rewards_model, recon_reward, recon_reward]
+            rewards = [real_rewards, rewards_model, rewards_model,
+                       recon_reward, recon_reward]
         else:
             rewards = len(gifs) * [None]
 
@@ -683,8 +797,6 @@ class Trainer:
                 gif, gif_path, name, size=self.c.coord_lim,
                 res=self.c.width, r=self.c.r, rewards=reward)
 
-
-
         print("Done")
-        # Set net to train mode again.
-        self.net.train()
+        # Set stove to train mode again.
+        self.stove.train()

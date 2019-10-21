@@ -1,16 +1,22 @@
+"""Contains visualisation routines used by trainer."""
+
 import os
-import matplotlib.pyplot as plt
 import numpy as np
 import imageio
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from PIL import Image, ImageDraw
 
-# VIN Plots
 color = ['r', 'g', 'b', 'k', 'y', 'm', 'c']
 
 
 def ar(x, y, z):
+    """Offset arange by z/2."""
     return z / 2 + np.arange(x, y, z, dtype='float')
 
+
 def draw_image(X, res, r=None, size=None):
+    """Render array of positions with aliasing."""
     if size is None:
         size = 10
 
@@ -30,17 +36,55 @@ def draw_image(X, res, r=None, size=None):
             # i.e. the further away we are from ball center, the lower
             # the intensity is.
             A[t, :, :, i] += np.exp(-(((I - X[t, i, 0]) ** 2 +
-                                    (J - X[t, i, 1]) ** 2) /
-                                   (r[i] ** 2)) ** 4)
-
+                                       (J - X[t, i, 1]) ** 2) /
+                                      (r[i] ** 2)) ** 4)
         A[t][A[t] > 1] = 1
+
     return A
 
-def plot_positions(xy, img_folder, prefix, save=True, size=10, presentation=False):
+
+def animate(states, img_folder, prefix, res=32, r=1.2, size=10, rewards=None):
+    """Animate a sequence of states.
+
+    Uses the same rendering engine as in env.
+    Expects states in [-1, 1].
+
+    """
+
+    if img_folder is not None and not os.path.exists(img_folder):
+        os.makedirs(img_folder)
+
+    # length of sequence
+    _, num_obj, _ = states.shape
+
+    # rescale states to [0, size]
+    xy = (states[..., :2] + 1.0) / 2.0 * size
+
+    # radii of ball, should be identical to how data was created
+    _r = np.array(num_obj * [r])
+    images = draw_image(xy, res=res, r=_r, size=size)
+
+    images = (255 * images).astype('uint8')
+
+    if rewards is not None:
+        images[rewards < 0.5] = 255 - images[rewards < 0.5]
+        reward_annotations = get_reward_annotation(rewards, res=res)
+        reward_annotations = reward_annotations.astype('uint8')
+        images = np.concatenate([reward_annotations, images], 1)
+        images = images.astype('uint8')
+
+    if img_folder is not None:
+        imageio.mimsave(os.path.join(img_folder, prefix+'.gif'), images, fps=24)
+
+    return images
+
+
+def plot_positions(xy, img_folder, prefix, save=True, size=10,
+                   presentation=False):
+    """Use scatter plots and decreasing alpha of balls to visualise movement."""
     if not os.path.exists(img_folder):
         os.makedirs(img_folder)
 
-    from visualize import color
     fig_num = len(xy)
     mydpi = 100
     fig = plt.figure(figsize=(128 * 3/mydpi, 128 * 3/mydpi))
@@ -67,7 +111,6 @@ def plot_positions(xy, img_folder, prefix, save=True, size=10, presentation=Fals
 
     if save:
         fig.savefig(img_folder+prefix+".pdf", dpi=mydpi, transparent=transparent)
-        vis.matplot(fig)
 
     fig.canvas.draw()
     image = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8')
@@ -77,7 +120,10 @@ def plot_positions(xy, img_folder, prefix, save=True, size=10, presentation=Fals
 
 
 def animate_mpl(states, img_folder, prefix, presentation=False):
-    from PIL import Image
+    """Use plt.scatter to create animations.
+
+    Really hard to get size correct. Keep for legacy, but should not be used.
+    """
     images = []
     for i in range(len(states)):
         img = plot_positions(states[i:i + 1], img_folder,
@@ -86,36 +132,8 @@ def animate_mpl(states, img_folder, prefix, presentation=False):
     imageio.mimsave(os.path.join(img_folder, prefix+'.gif'), images, fps=24)
 
 
-def animate(states, img_folder, prefix, res=32, r=1.2, size=None, rewards=None):
-    '''param states: shape (T, o, 2) sequence to animate'''
-
-    if img_folder is not None and not os.path.exists(img_folder):
-        os.makedirs(img_folder)
-
-    # length of sequence
-    num_img, num_obj, _ = states.shape
-    # isolate positions
-    xy = states[..., :2]
-    # radii of ball, should be identical to
-    # how data was created
-    _r = np.array(3 * [r])
-    images = draw_image(xy, res=res, r=_r, size=size)
-
-    images = (255 * images).astype('uint8')
-
-    if rewards is not None:
-        images[rewards < 0.5] = 255 - images[rewards < 0.5]
-        reward_annotations = get_reward_annotation(rewards, res=res)
-        reward_annotations = reward_annotations.astype('uint8')
-        images = np.concatenate([reward_annotations, images], 1)
-        images = images.astype('uint8')
-
-    if img_folder is not None:
-        imageio.mimsave(os.path.join(img_folder, prefix+'.gif'), images, fps=24)
-    return images
-
-from PIL import Image, ImageDraw
 def get_reward_annotation(rewards, res):
+    """If action_conditioned is true, add primitive reward vis to animated gifs."""
     h = 15
     annotations = np.zeros((rewards.size, h, res, 3))
     for t, reward in enumerate(rewards):
@@ -126,10 +144,8 @@ def get_reward_annotation(rewards, res):
     return annotations
 
 
-# Object Detection Plots
-
-# from crazyK, super useful
 def setup_axis(axis):
+    """Remove any decoration from plot."""
     axis.tick_params(axis='both',       # changes apply to the x-axis
                      which='both',      # both major and minor ticks are affected
                      bottom=False,      # ticks along the bottom edge are off
@@ -141,6 +157,7 @@ def setup_axis(axis):
 
 
 def rectangles_from_z(z, ax, width, height):
+    """Plot boudning boxes corresponding to a given z."""
     cs = ['white', 'yellow', 'orange']
     for c, obj in zip(cs, z):
         sy, sx, y, x = obj
@@ -170,7 +187,10 @@ def rectangles_from_z(z, ax, width, height):
 
 
 def plot_boxes(imgs, z, width, height, n_sequences=2, future=False, save_path=None):
-    """ Pass matching sequene of images and z. """
+    """Visualise predicted bounding boxes over a selection of sequences.
+
+    Pass matching sequene of images and z.
+    """
     # number of images in sequence
     cols = imgs.shape[1]
 
@@ -188,7 +208,7 @@ def plot_boxes(imgs, z, width, height, n_sequences=2, future=False, save_path=No
 
         ax.imshow(imgs[i].T)
 
-        rect = rectangles_from_z(z[i], ax, width, height)
+        rectangles_from_z(z[i], ax, width, height)
 
     plt.suptitle('Future' if future else 'Present')
     plt.subplots_adjust(top=1.0, bottom=0.0,
@@ -201,8 +221,8 @@ def plot_boxes(imgs, z, width, height, n_sequences=2, future=False, save_path=No
 
 
 def plot_bg(marginalise_bg, bg_loglik, n_sequences):
-
-    fig, axs = plt.subplots(nrows=n_sequences, ncols=4, figsize=(8, n_sequences*2.5))
+    """Show that background is correctly marginalised."""
+    _, axs = plt.subplots(nrows=n_sequences, ncols=4, figsize=(8, n_sequences*2.5))
 
     marginalise_bg = marginalise_bg[:, 0]
 
@@ -222,11 +242,10 @@ def plot_bg(marginalise_bg, bg_loglik, n_sequences):
 
     plt.close()
 
-
 def plot_patches(patches, marg_patch, overlap, patches_ll, c):
     """For each sequence plot the patches of the first image."""
-
-    fig, axs = plt.subplots(nrows=c.n_plot_sequences, ncols=3, figsize=(8, c.n_plot_sequences*2.5))
+    fs = (8, c.n_plot_sequences*2.5)
+    fig, axs = plt.subplots(nrows=c.n_plot_sequences, ncols=3, figsize=fs)
 
     if patches.shape[1] == 1:
         patches = patches[:, 0]
@@ -255,21 +274,17 @@ def plot_patches(patches, marg_patch, overlap, patches_ll, c):
 
 
 def plot_grad_flow(named_parameters):
-    '''Plots the gradients flowing through different layers in the net during training.
-    Can be used for checking for possible gradient vanishing / exploding problems.
+    """Plot the gradients for the parameters in model.named_parameters().
 
-    Usage: Plug this function in Trainer class after loss.backwards() as
-    "plot_grad_flow(self.model.named_parameters())" to visualize the gradient flow'''
+    Use after loss.backwards()
 
-    from matplotlib import pyplot as plt
-    from matplotlib.lines import Line2D
-
+    """
     plt.figure(figsize=(15, 6))
     ave_grads = []
     max_grads = []
     layers = []
     for n, p in named_parameters:
-        if(p.requires_grad):  # and ("bias" not in n):
+        if p.requires_grad:
             try:
                 layers.append(n)
                 ave_grads.append(p.grad.abs().mean())
@@ -283,13 +298,13 @@ def plot_grad_flow(named_parameters):
     plt.xlim(left=0, right=len(ave_grads))
     # plt.ylim(bottom=-0.001, top=0.02)  # zoom in on the lower gradient regions
     plt.xlabel("Layers")
-    plt.ylabel("average gradient")
+    plt.ylabel("Average gradient")
     plt.title("Gradient flow")
 
-    # plt.grid(True)
+    labels = ['max-gradient', 'mean-gradient', 'zero-gradient']
     plt.legend([Line2D([0], [0], color="c", lw=4),
                 Line2D([0], [0], color="b", lw=4),
-                Line2D([0], [0], color="k", lw=4)], ['max-gradient', 'mean-gradient', 'zero-gradient'])
+                Line2D([0], [0], color="k", lw=4)], labels)
     plt.yscale('log')
     plt.show()
     plt.close()

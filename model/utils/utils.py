@@ -1,21 +1,13 @@
 """Utility functions."""
+
 import os
-import torch
 import ast
 from datetime import datetime
 
 
-def truncated_normal_(tensor, mean=0, std=0.1):
-    """Custom variable initialisation."""
-    size = tensor.shape
-    tmp = tensor.new_empty(size + (4,)).normal_()
-    valid = (tmp < 2) & (tmp > -2)
-    ind = valid.max(-1, keepdim=True)[1]
-    tensor.data.copy_(tmp.gather(-1, ind).squeeze(-1))
-    tensor.data.mul_(std).add_(mean)
-
-
+# Custom argparser.
 def str_to_float(argument):
+    """Infer numeric type from string."""
     out = argument
     try:
         if argument.lower() == 'true':
@@ -33,7 +25,9 @@ def str_to_float(argument):
 
     return out
 
+
 def str_to_attr(argument):
+    """Convert string to attribute."""
     out = argument
     try:
         out = ast.literal_eval(argument)
@@ -42,7 +36,9 @@ def str_to_attr(argument):
 
     return out
 
+
 def load_args(config, sh_args):
+    """Set attributes of config class given dict of args."""
     for k, v in sh_args.items():
         try:
             config.__getattribute__(k)
@@ -51,20 +47,31 @@ def load_args(config, sh_args):
             print(e)
     return config
 
+
 class ExperimentLogger():
+    """Log performance of model instance.
+
+    ExperimentLogger is used by Trainer.
+    """
+
     def __init__(self, config, attributes=None, log_str=None):
+        """Initialise experiment folder."""
         self.c = config
 
+        # Logged quantitites.
         if attributes is None:
             self.attributes = \
                 ['step', 'time', 'elbo', 'reward', 'min_ll',
-                 'bg', 'patch', 'overlap', 'log_q', 'translik', 'kl_latent', 'kl_state',
-                 'error', 'std_error', 'scale_x', 'scale_y', 'v_error', 'std_v_error',
+                 'bg', 'patch', 'overlap', 'log_q', 'translik',
+                 'error', 'std_error',
+                 'scale_x', 'scale_y',
+                 'v_error', 'std_v_error',
                  'z_std_0', 'z_std_1', 'z_std_2', 'z_std_3', 'z_std_4', 'z_std_5',
                  'swaps', 'type']
         else:
             self.attributes = attributes
 
+        # Formatting.
         if log_str is None:
             self.log_str = '{:d},' + (len(self.attributes) - 2) * '{:.5f},' + '{}\n'
         else:
@@ -72,6 +79,7 @@ class ExperimentLogger():
 
         self.performance_str = ','.join(self.attributes)+'\n'
 
+        # Make Experiment folder and save config.
         if not self.c.nolog:
             self.exp_dir = self.make_dir()
             self.img_dir = os.path.join(self.exp_dir, 'imgs')
@@ -84,11 +92,11 @@ class ExperimentLogger():
                 f.write(self.performance_str)
 
         else:
-            self.exp_dir = None
+            self.exp_dir = os.path.join(self.c.experiment_dir, 'tmp')
             print('logging disabled')
 
-
     def make_dir(self):
+        """Find current run number and create folder."""
         exp_dir = os.path.join(
             self.c.experiment_dir,
             'run{:03d}'
@@ -103,6 +111,7 @@ class ExperimentLogger():
         return current
 
     def save_config(self):
+        """Save StoveConfig file as txt."""
         file = os.path.join(self.exp_dir, 'config.txt')
         with open(file, 'a') as f:
             f.write('setting name, setting value\n')
@@ -121,9 +130,12 @@ class ExperimentLogger():
             time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             f.write('{},{}\n'.format('time', time))
 
-
     def performance(self, perf_dict):
+        """Log the performance for a given performance dictionary.
 
+        Valid perf_dict created by trainer.error_and_log().
+
+        """
         # extract data from performance dict
         # return NaN if not available
         values = [perf_dict.get(attribute, float('nan')) for attribute in self.attributes]
@@ -135,4 +147,3 @@ class ExperimentLogger():
         if not self.c.nolog:
             with open(self.performance_file, 'a') as f:
                 f.write(log_str)
-

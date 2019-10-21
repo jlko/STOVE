@@ -173,7 +173,7 @@ def load_model():
             'traindata': '/home/{}/share/data/billards_w_actions_train_data.pkl'.format(user),
             'testdata': '/home/{}/share/data/billards_w_actions_test_data.pkl'.format(user)}
     trainer = load_vin(extras=extras, restore=restore)
-    model = trainer.net
+    model = trainer.stove
     return model
 
 def main(args):

@@ -8,12 +8,7 @@ import imageio
 import copy
 from tqdm import tqdm
 
-def main(run_name):
-    """
-    Runs a completely random policy on the environment
-    :param run_name: (str) name for logging files
-    :return:
-    """
+def main(task, run_name):
     hw = 15
     action_force = 0.6
     scaling = 2
@@ -35,4 +30,19 @@ def main(run_name):
             img, _, r, _ = task.step(action)
             all_rewards.append(r)
 
-    return all_rewards
+    print(np.mean(all_rewards))
+    print(np.std(all_rewards))
+
+
+if __name__ == "__main__":
+    run_name = sys.argv[1]
+    task = sys.argv[2]
+    if task == 'avoidance':
+        task = envs.AvoidanceTask
+    elif task == 'mindist':
+        task = envs.MinDistanceTask
+    elif task == 'maxdist':
+        task = envs.MaxDistanceTask
+    else:
+        raise ValueError('task is unkown')
+    main(task, run_name)

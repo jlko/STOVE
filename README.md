@@ -1,5 +1,4 @@
 # Structured Object-Aware Physics Prediction for Video Modelling and Planning
-See [arxiv.org/1910.02425](https://arxiv.org/abs/1910.02425) for further information.
 
 ## Example Animations
 ### Video Prediction
@@ -35,10 +34,9 @@ See [arxiv.org/1910.02425](https://arxiv.org/abs/1910.02425) for further informa
 
 The above depicts the reconstruction and prediction errors of the various models.
 The models are given 8 frames of video as input, which they reconstruct. Conditioned on this 
-input, all models predict the following 92 frames, which are then compared to ground truth data.
-We significantly outperform all baselines in predicting either future images or states in both
-scenarios. Additionally, we perform strikingly close to the supervised baseline in the billiards scenario.
-10 different sequences of lengths 100 are shown.
+input, all models predict the following 92 frames.
+Only STOVE manages to generate visually convincing physically behavior over longer timeframes.
+10 different sequences of length 100 are shown.
 
 ### Model-Based Control
 <div>
@@ -84,25 +82,15 @@ sample efficient model-based reinforcement learning in tasks with
 heavily interacting objects.
 
 ## Data
-Run `bash scripts/create_data.sh` to generate either billiards and gravity data.
+Run `run_scripts.py --create-data` to generate either billiards and gravity data.
 Also random data collected in the RL setting to train the action-
 conditioned world model is generated.
 
 ## Model
-Run `bash scripts/run_model.sh` to train the model on billiards and gravity data.
+Run `bash run_files/run_models.sh` to train the model on billiards and gravity data.
 Also an actioned-conditioned world model is trained on the avoidance task.
 
 
 ## Interactive
-`interactive.py` allows you to either play in a live environment or a model simulation of the environment.
-
-## Citation
-Please cite our work here and at [arxiv.org/1910.02425](https://arxiv.org/abs/1910.02425) as 
-```
-@article{kossen2019structured,
-    title={Structured Object-Aware Physics Prediction for Video Modeling and Planning},
-    author={Jannik Kossen and Karl Stelzner and Marcel Hussing and Claas Voelcker and Kristian Kersting},
-    year={2019},
-    journal={arXiv:1910.02425},
-}
-```
+`python run_scripts.py --interactive` allows you to either play in a live
+environment or a model simulation of the environment.

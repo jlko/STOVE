@@ -5,7 +5,7 @@
     <table width="610" border="0px">
       <tr>
         <th width="100">Real</th>
-        <th width="100">Ours</th>
+        <th width="100">STOVE</th>
         <th width="100">VRNN</th>
         <th width="100">SQAIR</th>
         <th width="100">Linear</th>
@@ -27,15 +27,14 @@
     </table>
     <img height="100" width="410" src="/figures/comparison_grid_planning.gif">
 </div>
-
-<br/>
-<br/>
-<br/>
-
+<br>
+<br>
+<br>
 (a, b) The above depicts the reconstruction and prediction errors of the various models.
 The models are given 8 frames of video as input, which they reconstruct. Conditioned on this 
-input, all models predict the following 92 frames.
-Only STOVE manages to generate visually convincing physically behavior over longer timeframes.
+input, all models predict the following 92 frames, which are then compared to ground truth data.
+We significantly outperform all baselines in predicting either future images or states in both
+scenarios. Additionally, we perform strikingly close to the supervised baseline in the billiards scenario.
 10 different sequences of lengths 100 are shown.
 
 (c) The above shows the performance of the compared models in the interactive

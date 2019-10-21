@@ -1,0 +1,3 @@
+python run_stove.py --args description billiards_example_run experiment_dir ./experiments/stove/00_billiards_example traindata ./data/billiards_train.pkl testdata ./data/billiards_test.pkl
+python run_stove.py --args description gravity_example_run experiment_dir ./experiments/stove/01_gravity_example traindata ./data/gravity_train.pkl testdata ./data/gravity_test.pkl
+python run_stove.py --args description action_conditioned_exapmle experiment_dir ./experiments/stove/02_action_conditioned traindata ./data/avoidance_train.pkl testdata ./data/avoidance_test.pkl debug_core_appearance False debug_match_appearance False

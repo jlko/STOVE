@@ -1,0 +1,1 @@
+python run_stove.py --args description w_out_old_remove_flags_furtherrelaxconfig experiment_dir ./experiments/00_billiards_example traindata ./data/billiards_train.pkl testdata ./data/billiards_test.pkl num_epochs 300

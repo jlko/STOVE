@@ -19,14 +19,6 @@ def _get_obj_spn(c, seed):
     spn_args.gauss_min_sigma = c.obj_min_var
     spn_args.gauss_max_sigma = c.obj_max_var
 
-    if c.debug_spn_mean:
-        spn_args.gauss_mean_of_means = 0.9  # 0.4  # 0.9
-        print('debugging obj_spn mean to {}'.format(spn_args.gauss_mean_of_means))
-
-    if c.debug_spn_obj_min_mean is not None:
-        print('debugging obj_spn mean to {}'.format(spn_args.gauss_mean_of_means))
-        spn_args.gauss_min_mean = c.debug_spn_obj_min_mean
-
     return RatSpn(1, region_graph=rg, args=spn_args, name='obj-spn')
 
 
@@ -44,14 +36,6 @@ def _get_bg_spn(c, seed):
     spn_args.gauss_min_sigma = c.bg_min_var
     spn_args.gauss_max_sigma = c.bg_max_var
 
-    if c.debug_spn_mean:
-        spn_args.gauss_mean_of_means = 0.123  #  0.4 # 0.123
-        print('debugging bg_spn mean to {}'.format(spn_args.gauss_mean_of_means))
-
-    if c.debug_spn_bg_max_mean is not None:
-        print('debugging obj_spn mean to {}'.format(spn_args.gauss_mean_of_means))
-        spn_args.gauss_max_mean = c.debug_spn_bg_max_mean
-
     return RatSpn(1, region_graph=rg, args=spn_args, name='bg-spn')
 
 
@@ -60,7 +44,7 @@ def _get_simple_bg(c):
 
     class SimpleBG:
         def __init__(self, var):
-            var = var
+            self.var = var
 
         def forward(self, img_flat, marg_flat):
             """ Compute likelihood score for the background.
@@ -68,7 +52,7 @@ def _get_simple_bg(c):
             Assuming a fixed GMM (and black background)
             :param img_flat" (n4, cwh)
             """
-            dist = Normal(0.0, var)
+            dist = Normal(0.0, self.var)
             pixel_lls = dist.log_prob(img_flat)
             # only count those pixels for which marg_flat is 0
             # i.e. they do not get marginalised)
@@ -86,7 +70,7 @@ def _get_simple_obj(c):
 
     class SimpleObj:
         def __init__(self, var):
-            var = var
+            self.var = var
 
         def forward(self, img_flat, marg_flat):
             """ Compute likelihood score for a simple object.
@@ -94,7 +78,7 @@ def _get_simple_obj(c):
             Assuming a fixed GMM (and white objs)
             :param img_flat" (n4, cwh)
             """
-            dist = Normal(0.8, var)
+            dist = Normal(0.8, self.var)
             pixel_lls = dist.log_prob(img_flat)
             # only count those pixels for which marg_flat is 0
             # i.e. they do not get marginalised)
