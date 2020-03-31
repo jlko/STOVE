@@ -1,34 +1,37 @@
 # Structured Object-Aware Physics Prediction for Video Modelling and Planning
+See [arxiv.org/1910.02425](https://arxiv.org/abs/1910.02425) for further information.
 
 ## Example Animations
 ### Video Prediction
 <div>
-    <table width="610" border="0px">
+    <table width="710" border="0px">
       <tr>
         <th width="100">Real</th>
         <th width="100">Ours</th>
         <th width="100">VRNN</th>
         <th width="100">SQAIR</th>
+        <th width="100">DDPAE</th>
         <th width="100">Linear</th>
         <th width="100">Supervised</th>
       </tr>
     </table>
-    <img height="100" width="610" src="/figures/comparison_grid_billiards.gif">
+    <img height="100" width="710" src="/figures/comparison_grid_billiards.gif">
 </div>
 
 
 <div>
-    <table width="610" border="0px">
+    <table width="710" border="0px">
       <tr>
         <th width="100">Real</th>
         <th width="100">Ours</th>
         <th width="100">VRNN</th>
         <th width="100">SQAIR</th>
+        <th width="100">DDPAE</th>
         <th width="100">Linear</th>
         <th width="100">Supervised</th>
       </tr>
     </table>
-    <img height="100" width="610" src="/figures/comparison_grid_gravity.gif">
+    <img height="100" width="710" src="/figures/comparison_grid_gravity.gif">
 </div>
 
 
@@ -81,8 +84,26 @@ Finally, we demonstrate the strength of our model as a simulator for
 sample efficient model-based reinforcement learning in tasks with
 heavily interacting objects.
 
+## Other animations
+<img height="100" width="100" src="/figures/long_rollout.gif">
+Stove rollout is stable for possibly infinite amount of timesteps.
+(Shown are 2000 frames of rollout and we tested up to 100000.)
+<img height="100" width="100" src="/figures/multiball_billiards.gif">
+All components of STOVE scale well to videos with larger number of objects!
+
+## Citation
+Please cite our work here and at [arxiv.org/1910.02425](https://arxiv.org/abs/1910.02425) as 
+```
+@article{kossen2019structured,
+    title={Structured Object-Aware Physics Prediction for Video Modeling and Planning},
+    author={Jannik Kossen and Karl Stelzner and Marcel Hussing and Claas Voelcker and Kristian Kersting},
+    year={2019},
+    journal={arXiv:1910.02425},
+}
+```
+
 ## Data
-Run `run_scripts.py --create-data` to generate either billiards and gravity data.
+Run `run_scripts.py --create-data` to generate billiards and gravity data.
 Also random data collected in the RL setting to train the action-
 conditioned world model is generated.
 
@@ -94,3 +115,6 @@ Also an actioned-conditioned world model is trained on the avoidance task.
 ## Interactive
 `python run_scripts.py --interactive` allows you to either play in a live
 environment or a model simulation of the environment.
+
+## Questions
+If you have any questions or problems regarding the code or paper do not hesitate to contact us.
