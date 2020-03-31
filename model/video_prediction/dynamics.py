@@ -106,7 +106,7 @@ class Dynamics(nn.Module):
             print('Using xavier init for interaction.')
             self.weight_init()
 
-        self.nonlinear = F.elu if self.c.debug_nonlinear == 'elu' else F.relu
+        self.nonlinear = F.elu if self.c.debug_nonlinear == 'leaky_relu' else F.leaky_relu
 
         # generative transition likelihood std
         std = self.c.transition_lik_std
@@ -217,7 +217,8 @@ class Dynamics(nn.Module):
 
         return result, dynamic_pred
 
-    def forward(self, s, core_idx, actions=None, obj_appearances=None):
+    def forward(self, s, core_idx, actions=None, obj_appearances=None,
+                lim_enc=2):
         """Dynamics prediction. Predict future state given previous.
 
         Args:
@@ -245,7 +246,8 @@ class Dynamics(nn.Module):
             s = torch.cat([s, obj_appearances], -1)
 
         # add back positions for distance encoding
-        s = torch.cat([s[..., :2], self.state_enc(s)[..., 2:]], -1)
+        # positions and velocities for supervised case
+        s = torch.cat([s[..., :lim_enc], self.state_enc(s)[..., lim_enc:]], -1)
 
         result, dynamic_pred = self.core(s, core_idx)
 

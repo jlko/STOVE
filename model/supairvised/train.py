@@ -143,7 +143,7 @@ class SupTrainer(AbstractTrainer):
 
     def train(self):
         """Execute model training."""
-        print('Using supair!' if self.c.load_encoder else 'Supervised!')
+        print('Using supair!' if self.c.load_encoder is not None else 'Supervised!')
         step_counter = 0
         num_rollout = self.c.num_rollout
         start = time.time()
@@ -151,6 +151,11 @@ class SupTrainer(AbstractTrainer):
 
         for epoch in range(self.c.num_epochs):
             for i, data in enumerate(self.dataloader, 0):
+
+                if self.c.debug_anneal_lr:
+                    self.adjust_learning_rate(
+                        self.optimizer, self.c.debug_anneal_lr, step_counter)
+
                 now = time.time() - start
 
                 step_counter += 1
@@ -163,7 +168,14 @@ class SupTrainer(AbstractTrainer):
                 present_labels = present_labels.to(self.c.device)
                 future_labels = future_labels.to(self.c.device)
 
-                if self.c.load_encoder:
+                if self.c.action_conditioned:
+                    pres_actions = self.init_t(data['present_actions'])
+                    fut_actions = self.init_t(data['future_actions'])
+                    actions = torch.cat([pres_actions, fut_actions], 1)
+                else:
+                    actions = None
+
+                if self.c.load_encoder is not None:
                     all_images = torch.cat([present_images, future_images], 1)
                     sup_states = self.stove.sup(all_images).detach()
 
@@ -188,6 +200,7 @@ class SupTrainer(AbstractTrainer):
 
                 state_pred, state_recon = self.stove.dyn(
                    input,
+                   actions=actions,
                    num_rollout=num_rollout,
                    debug_rollout=self.c.debug_rollout_training)
 
@@ -209,8 +222,8 @@ class SupTrainer(AbstractTrainer):
                         recon_loss.item(), log_type)
 
                 # also document aux losses
-                if step_counter % self.c.print_every == 0 and self.c.load_encoder:
-
+                if step_counter % self.c.print_every == 0 and \
+                        self.c.load_encoder is not None:
                     # supair against true labels
                     rv_present = present_labels[:, 1:]
                     rv_future = future_labels
@@ -241,6 +254,9 @@ class SupTrainer(AbstractTrainer):
                 if step_counter % self.c.save_every == 0:
                     self.save(epoch, step_counter)
 
+                if step_counter % self.c.long_rollout_every == 0:
+                    self.long_rollout(idx=[0, 1], step_counter=step_counter)
+
             if self.c.debug_test_mode:
                 # break out of epochs
                 break
@@ -248,7 +264,15 @@ class SupTrainer(AbstractTrainer):
             self.test(step_counter, start)
             print("epoch ", epoch, " Finished")
 
-        self.save(epoch, step_counter)
+        # Create some more rollouts at the end of training
+        if not self.c.debug_test_mode:
+            self.long_rollout(step_counter=step_counter)
+
+        # Save model in final state
+        if not self.c.nolog:
+            self.save(epoch, step_counter)
+            succ = os.path.join(self.logger.exp_dir, 'success')
+            open(succ, 'w').close()
         print('Finished Training')
 
 
@@ -288,7 +312,14 @@ class SupTrainer(AbstractTrainer):
             present_labels = present_labels.to(self.c.device)
             future_labels = future_labels.to(self.c.device)
 
-            if self.c.load_encoder:
+            if self.c.action_conditioned:
+                pres_actions = self.init_t(data['present_actions'])
+                fut_actions = self.init_t(data['future_actions'])
+                actions = torch.cat([pres_actions, fut_actions], 1)
+            else:
+                actions = None
+
+            if self.c.load_encoder is not None:
                 all_images = torch.cat([present_images, future_images], 1)
                 sup_states = self.stove.sup(all_images).detach()
                 
@@ -311,6 +342,7 @@ class SupTrainer(AbstractTrainer):
 
             state_pred, state_recon = self.stove.dyn(
                 input,
+                actions=actions,
                 num_rollout=self.c.num_rollout,
                 debug_rollout=self.c.debug_rollout)
 
@@ -330,88 +362,134 @@ class SupTrainer(AbstractTrainer):
             if i > 7:
                 break
 
-        self.long_rollout(step_counter)
-
     @torch.no_grad()
-    def long_rollout(self, step_counter, idx=0, with_logging=True):
+    def long_rollout(self, idx=None, actions=None, step_counter=None):
         """Create long rollouts save as gif and log their mse rollout error."""
 
         total_images = self.test_dataset.total_img
         total_labels = self.test_dataset.total_data
         step = self.c.frame_step
         visible = self.c.num_visible
-        batch_size = self.c.batch_size
-
+        vis = visible
+        batch_size = self.test_dataset.total_img.shape[0]
+        run_len = self.test_dataset.total_img.shape[1]
+        # repeat actions for action conditioned setting for long rollout
+        states_save_len = 500
         long_rollout_length = self.c.num_frames // step - visible
+        max_rollout = long_rollout_length
+        offset = 1 if self.c.load_encoder is not None else 0
+        skip = offset
+
+        if states_save_len > max_rollout:
+            print("Wrapping around actions for long rollouts.")
+
+        # idx of items for gifs
+        if idx is None:
+            idx = list(range(10))
 
         true_states = total_labels[:batch_size, :visible*step:step]
         true_states = torch.tensor(true_states).double().to(self.c.device)
 
-        if self.c.load_encoder:
-            sup_input = total_images[:batch_size, :visible*step:step]
-            sup_input = torch.tensor(sup_input).to(self.c.device)
-            sup_states = self.stove.sup(sup_input).detach()
+        if self.c.load_encoder is not None:
+            sup_input = total_images[:batch_size, :(vis+max_rollout)*step:step]
+            sup_states = torch.tensor(sup_input).to(self.c.device)
+            sup_states = self.stove.sup(sup_states).detach()
             # account for zeros in sup_states
-            sup_states = self.match_positions(true_states[:, 1*step:], sup_states)
-            input = sup_states
+            input = self.match_positions(
+                true_states[:, skip*step:vis*step], sup_states[:, :(vis-skip)*step])
         else:
             input = true_states
 
-        pred, recon = self.stove.dyn(input, long_rollout_length,
-                               debug_rollout=self.c.debug_rollout
-                               )
+        if self.c.action_conditioned:
+            if actions is None:
+                total_actions = self.test_dataset.total_actions
+            else:
+                total_actions = actions
+
+            total_actions = self.init_t(torch.tensor(
+                total_actions[:batch_size, skip*step::step]))
+            action_input = total_actions[:, skip*step:vis*step]
+
+            # need some actions for rollout
+            true_future_actions = total_actions[
+                :, vis*step:(vis+max_rollout)*step]
+            action_recon = total_actions[idx, skip*step:(vis+max_rollout)*step]
+
+        else:
+            action_input = None
+            true_future_actions = None
+            action_recon = None
+            total_actions = None
+
+        pred, recon = self.stove.dyn(
+            input, num_rollout=states_save_len,
+            debug_rollout=self.c.debug_rollout,
+            actions=total_actions)
 
         simu_rollout = pred.detach()
         simu_recon = recon.detach()
         simu = torch.cat([simu_recon, simu_rollout], 1)
 
-        if not self.c.nolog and with_logging:
-            # get prediction error over long sequence for loogging
-            offset = 1 if self.c.load_encoder else 0
-            real_labels = torch.Tensor(total_labels, device=self.c.device)
-            real_labels = real_labels.type(self.c.dtype)
-            real_labels = real_labels[
-                :batch_size, offset:(visible+long_rollout_length), :, :2]
-            # simu should already be matched to real_labels bc input was aligned
-            self.prediction_error(simu, real_labels, suffix='')
+        # get prediction error over long sequence for logging
+        real_labels = torch.Tensor(total_labels, device=self.c.device)
+        real_labels = real_labels.type(self.c.dtype)
+        real_labels = real_labels[
+            :batch_size, offset:(visible+long_rollout_length)*step]
 
-        print("Making GIFs.")
+        simu_err = simu[:, :(vis+max_rollout-skip)*step]
+        self.prediction_error(simu_err, real_labels, suffix='')
 
-        # Saving
-        # Rescale to 0, 10 frame
-        simu_s = self.its(simu[idx, :, :, :2]).cpu().numpy()
-        plot_labels = self.its(torch.from_numpy(total_labels[idx, 1::step]))
-        plot_labels = plot_labels.numpy()
+        # save states
+        states_dir = self.logger.rollout_states_dir
+        save = lambda name, data, a: np.save(
+            os.path.join(
+                states_dir, '{}{}'.format(name, a)),
+            data.cpu().numpy() if isinstance(data, torch.Tensor) else data)
 
-        if not self.c.nolog:
-            gif_path = os.path.join(self.logger.exp_dir, 'gifs')
+        if step_counter is not None:
+            add = ['', '_{:05d}'.format(step_counter)]
         else:
-            gif_path = os.path.join(self.c.experiment_dir, 'tmp')
+            add = ['']
+
+        for a in add:
+            save('rollout_states', simu, a)
+            if self.c.load_encoder is not None:
+                save('recon_states', sup_states, a)
+            # Rewards not yet used in supairvised setting.
+            # if self.c.action_conditioned:
+            #     save('rollout_rewards', rewards_model, a)
+            #     save('recon_rewards', recon_reward_total, a)
+        save('real_states', real_labels, '')
+        # if self.c.action_conditioned:
+        #     save('real_rewards', real_rewards, '')
+
+        # Rescale to 0, 10 frame
+        gif_path = self.logger.rollout_gifs_dir
+        print("Make GIFs in {}".format(gif_path))
+
+        simu_s = self.its(simu[idx, :vis+max_rollout, :, :2])
+        simu_s = simu_s.flatten(end_dim=1).cpu().numpy()
+        plot_labels = torch.from_numpy(total_labels[idx, skip*step::step])
+        plot_labels = self.its(plot_labels.flatten(end_dim=1))
+        plot_labels = plot_labels.numpy()
 
         res = self.c.height
         r = self.c.r
 
-        animate(plot_labels, gif_path, 'real_{:02d}'.format(idx))
-        animate(simu_s, gif_path, 'rollout_{:02d}_{:05d}'.format(
-            step_counter, idx), res=res, r=r)
-        animate(simu_s, gif_path, 'rollout_{:02d}'.format(idx),
+        animate(plot_labels, gif_path, 'real')
+        animate(simu_s, gif_path, 'rollout',
                  res=res, r=r,)
 
         # also make rollouts of how supair would have seen the whole sequence
-        if self.c.load_encoder:   
-
-            sup_input = total_images[idx:idx+1, ::step]
-            sup_input = torch.tensor(sup_input).to(self.c.device)
-            sup_states = self.stove.sup(sup_input).detach()
-            true = torch.tensor(plot_labels).to(self.c.device)
-            true = true.double().unsqueeze(0)
-            sup_states = self.match_positions(true, sup_states)
+        if self.c.load_encoder is not None:
+            real_labels = real_labels.to(self.c.device)
+            sup_states = self.match_positions(real_labels, sup_states)
             sup_fixed = self.stove.sup.fix_supair(sup_states)
-            if not self.c.nolog and with_logging:
-                self.prediction_error(simu, sup_fixed, suffix='sup')
+            self.prediction_error(real_labels, sup_fixed, suffix='sup')
 
-            sup_states = self.its(sup_states)
-            animate(sup_states[0].detach().cpu().numpy(), gif_path,
-                    'supair_{:02d}'.format(idx), res=res, r=r)
+            sup_states = self.its(sup_states[idx])
+            sup_states = sup_states.flatten(end_dim=1)
+            animate(sup_states.detach().cpu().numpy(), gif_path,
+                    'supair', res=res, r=r)
 
         print("Done")

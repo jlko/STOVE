@@ -7,10 +7,11 @@ For example of usage see evaluation_graphics.ipynb.
 import os
 from itertools import product
 
+import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 from SortedSet.sorted_set import SortedSet
-
+from glob import glob
 
 class EvaluationHelper:
     """Analyse performance of runs in experiment_dir."""
@@ -29,6 +30,9 @@ class EvaluationHelper:
 
         # read rollout errors as property, see below
         self._rollouts = None
+
+        # read states as property, see blow
+        self._states = None
 
         frames = ['pred', 'recon', 'total']
         self.supairvised_groups = list(product(['vin_true'], frames, [True, False]))\
@@ -117,7 +121,7 @@ class EvaluationHelper:
 
         return tmp
 
-    def gif_wall(self, runs=None, target='rollout_00.gif', file='gif_wall.html'):
+    def gif_wall(self, runs=None, target='rollout.gif', file='gif_wall.html'):
         """Create a html file, which displays the target gifs for all runs."""
         if runs is None:
             runs = list(self.runs)
@@ -420,25 +424,185 @@ class EvaluationHelper:
 
         return figs, axs
 
-    def plot_compare_rollouts(self, runs=None, which='x_errors'):
+    def plot_compare_rollouts(self, runs=None, which='x_errors', fa=None):
         """Plot final rollout errors for all runs."""
         if runs is None:
             runs = self.runs
 
-        fig, ax = plt.subplots(1, 1, figsize=(15, 10))
+        if fa is None:
+            fig, ax = plt.subplots(1, 1, figsize=(15, 10))
+        else:
+            fig, ax = fa
+
         errors = self.rollouts[which]
 
         for run in list(runs):
             try:
                 error = errors[run]
-                error.iloc[-1].plot(label=run)
+                error.iloc[-1].plot(label=run, ax=ax)
             except Exception as e:
                 print(e)
                 print('Not available for run {}'.format(run))
 
         ax.legend(bbox_to_anchor=(1.05, 1.05))
-        ax.set_title('avg over last 5 epochs')
 
+        return fig, ax
+
+    def plot_energy(self, runs=None, which='rollout_states', source='v', fa=None):
+        """Plot energy of states over rollouts.
+        
+        Args:
+            which (str): ['rollout_states', 'recon_states', 'real_states']. Note
+                that for rollout first num_visible - skip steps are observed.
+
+        """
+        if runs is None:
+            runs = self.runs
+        if fa is None:
+            fig, ax = plt.subplots(1, 1, figsize=(15, 10))
+        else:
+            fig, ax = fa
+
+        states = self.states[which]
+
+        for run in list(runs):
+            supairvised = eval(self.confs[run].T.supairvised.values[0])
+            if 'real' in which or (supairvised and not 'recon' in which):
+                off = 0
+            else:
+                off = 2
+            state = states[run]
+            if state is not None:
+                if source == 'v':
+                    v = state[:, 1:, :, off+2:off+4]
+                elif source == 'dx':
+                    v = state[:, 1:, :, off+0:off+2] - state[:, :-1, :, off+0:off+2]
+                else:
+                    raise ValueError
+
+                energies = (v**2).sum((-1, -2))
+                mean = np.mean(energies, axis=0)
+                std = np.std(energies, axis=0)
+                ax.plot(mean, label='{}:{}'.format(which, run))
+                ax.fill_between(range(mean.size), mean+std, mean-std, alpha=0.2)
+
+        ax.legend(bbox_to_anchor=(1.05, 1.05))
+        return fig, ax
+
+    def load_states(self, run, which='rollout_states'):
+        """Load states created during testing each epoch for given run."""
+        states = glob(os.path.join(run, 'states', '{}*'.format(which)))
+        states = [s for s in states if not s.endswith('rollout_states.npy')]
+        # get steps and filter out final state
+        indexes = [state.split('_')[-1][:-4] for state in states]
+        indexes = [int(i) for i in indexes]
+        index_dict = dict(zip(indexes, states))
+        value_dict = dict()
+
+        for index, state in sorted(index_dict.items()):
+            value_dict[state] = np.load(state)
+
+        return index_dict, value_dict
+
+    def load_final_states(self, run, which='rollout_states'):
+        """Load states created during testing each epoch for given run."""
+        states = os.path.join(run, 'states', '{}.npy'.format(which))
+        return np.load(states)
+
+
+    def plot_energy_progression(self, run, which='rollout_states', source='v', fa=None):
+        """Plot energy of states over rollouts.
+        
+        Args:
+            which (str): ['rollout_states', 'recon_states', 'real_states']. Note
+                that for rollout first num_visible - skip steps are observed.
+
+        """
+        if fa is None:
+            fig, ax = plt.subplots(1, 1, figsize=(15, 10))
+        else:
+            fig, ax = fa
+
+        supairvised = eval(self.confs[run].T.supairvised.values[0])
+
+        # read all saved states
+        index_dict, value_dict = self.load_states(run, which)
+
+        max_idx = max(index_dict)
+
+        for index, state in index_dict.items():
+
+            state = value_dict[state]
+            c = plt.cm.viridis(index/max_idx)
+            if 'real' in which or (supairvised and not 'recon' in which):
+                off = 0
+            else:
+                off = 2
+
+            if source == 'v':
+                v = state[:, 1:, :, off+2:off+4]
+            elif source == 'dx':
+                v = state[:, 1:, :, off+0:off+2] - state[:, :-1, :, off+0:off+2]
+            else:
+                raise ValueError
+
+            energies = (v**2).sum((-1, -2))
+            mean = np.mean(energies, axis=0)
+            
+            ax.plot(mean, c=c, alpha=0.2)
+
+        ax.set_title('{}, {}'.format(run, which))
+        return fig, ax
+
+    def plot_mean_energy_progression(self, run, which='rollout_states',
+                                     source='v', fa=None, color_grad=True):
+        """Plot energy of states over rollouts.
+        
+        Args:
+            which (str): ['rollout_states', 'recon_states', 'real_states']. Note
+                that for rollout first num_visible - skip steps are observed.
+
+        """
+        if fa is None:
+            fig, ax = plt.subplots(1, 1, figsize=(15, 10))
+        else:
+            fig, ax = fa
+
+        supairvised = eval(self.confs[run].T.supairvised.values[0])
+
+        index_dict, value_dict = self.load_states(run, which)
+        
+        max_idx = max(index_dict)
+
+        energies = []
+        colors = []
+        for index, state in sorted(index_dict.items()):
+
+            state = value_dict[state]
+            colors.append(plt.cm.viridis(index/max_idx))
+            if 'real' in which or (supairvised and not 'recon' in which):
+                off = 0
+            else:
+                off = 2
+            if source == 'v':
+                v = state[:, 1:, :, off+2:off+4]
+            elif source == 'dx':
+                v = state[:, 1:, :, off+0:off+2] - state[:, :-1, :, off+0:off+2]
+            else:
+                raise ValueError
+
+            energy = (v**2).sum((-1, -2))
+            mean = np.mean(energy)
+            energies.append(mean)
+
+        if not color_grad:
+            colors = None
+
+        ax.scatter(sorted(value_dict.keys()), energies, c=colors,
+                   label=run)
+        ax.legend(bbox_to_anchor=(1.05, 1.05))
+
+        ax.set_title('{}'.format(run, which))
         return fig, ax
 
     @property
@@ -506,6 +670,43 @@ class EvaluationHelper:
         self._rollouts['x_errors_std_sup'] = x_errors_std_sup
 
         return self._rollouts
+
+    @property    
+    def states(self):
+        """Load rollout states as property."""
+        # check if already loaded
+        if self._states is not None:
+            return self._states
+
+        # if not present, load rollout errors from csv
+        rollout_states = {}
+        recon_states = {}
+        real_states = {}
+
+        for run in list(self.runs):
+            try:
+                rollout_states[run] = np.load(
+                    os.path.join(run, 'states', 'rollout_states.npy'))
+            except Exception as e:
+                rollout_states[run] = None
+            try:
+                recon_states[run] = np.load(
+                    os.path.join(run, 'states', 'recon_states.npy'))
+            except Exception as e:
+                recon_states[run] = None
+            try:
+                real_states[run] = np.load(
+                    os.path.join(run, 'states', 'real_states.npy'))
+            except Exception as e:                
+                real_states[run] = None
+
+        self._states = dict()
+        self._states['rollout_states'] = rollout_states
+        self._states['recon_states'] = recon_states
+        self._states['real_states'] = real_states
+
+        return self._states
+
 
     @staticmethod
     def run_fmt(x, with_under=False):
@@ -620,8 +821,9 @@ class EvaluationHelper:
                 except Exception as e:
                     continue
 
-        axs[1].legend(bbox_to_anchor=(1.05, 1.05))
         axs[0].legend(bbox_to_anchor=(1.05, 1.05))
+        axs[1].legend(bbox_to_anchor=(1.05, 1.05))
+        axs[2].legend(bbox_to_anchor=(1.05, 1.05))
         plt.tight_layout()
 
         return fig, axs

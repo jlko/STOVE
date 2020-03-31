@@ -9,6 +9,8 @@ import os
 import glob
 
 from model.main import main as restore_model
+from model.utils.utils import bw_transform
+
 os.environ["CUDA_VISIBLE_DEVICES"] = '-1'
 
 
@@ -17,10 +19,13 @@ def run_fmt(x, with_under=False):
     return 'run{:03d}'.format(x) if not with_under else 'run_{:03d}'.format(x)
 
 
-def get_pixel_error(restore, linear=False, path='', real_mpe=False):
+def get_pixel_error(restore, linear=False, path='', real_mpe=False, checkpoint='checkpoint'):
     """Restore a model and calculate error from reconstructions."""
     # do not write any new runs
-    extras = {'nolog': True}
+    extras = {
+        'nolog': True,
+        'checkpoint_path': os.path.join(restore, checkpoint)}
+
     self = restore_model(restore=restore, extras=extras)
 
     # ignore supairvised runs for now
@@ -113,7 +118,12 @@ def get_pixel_error(restore, linear=False, path='', real_mpe=False):
     else:
         model_images = self.stove.reconstruct_from_z(z_seq)
 
+    if self.c.debug_bw:
+        true_images = bw_transform(true_images)
+
     model_images = torch.clamp(model_images, 0, 1)
+    mse = torch.mean(((true_images - model_images)**2), dim=(0, 2, 3, 4))
+
     plot_sample = model_images[:10, :, 0].detach().cpu().numpy()
     plot_sample = (255 * plot_sample.reshape(-1, self.c.height, self.c.width))
     plot_sample = plot_sample.astype(np.uint8)
@@ -125,12 +135,11 @@ def get_pixel_error(restore, linear=False, path='', real_mpe=False):
     imageio.mimsave(
         filepath, plot_sample, fps=24)
 
-    mse = torch.mean(((true_images - model_images)**2), dim=(0, 2, 3, 4))
-
     # also log state differences
     # bug_potential... for some reason self.c.coord_lim is 30 but max
     # true_states is 10 for gravity
     true_states = total_labels[:, skip:(visible+long_rollout_length)]
+    print(true_states.max(), ' is coord max.')
     true_states = torch.tensor(true_states).to(self.c.device).type(self.c.dtype)
     permutations = list(itertools.permutations(range(0, self.c.num_obj)))
     errors = []
@@ -167,6 +176,9 @@ def main(script_args):
     parser.add_argument(
         '--real-mpe', dest='real_mpe', action='store_true')
 
+    parser.add_argument(
+        '--checkpoint', type=str, default='checkpoint')
+
     args = parser.parse_args(script_args)
 
     filename = 'pixel_errors.csv'
@@ -183,10 +195,14 @@ def main(script_args):
     if len(restores) == 0:
         raise ValueError('No runs found in path {}.'.format(args.path))
 
+    # debug
+    # mse, mse_states = get_pixel_error(
+    #     restores[0], args.linear, args.path, args.real_mpe, args.checkpoint)
+    # return 0
     for restore in restores:
         try:
             mse, mse_states = get_pixel_error(
-                restore, args.linear, args.path, args.real_mpe)
+                restore, args.linear, args.path, args.real_mpe, args.checkpoint)
         except Exception as e:
             print(e)
             print('Not possible for run {}.'.format(restore))

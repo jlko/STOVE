@@ -1,9 +1,18 @@
 """Utility functions."""
 
 import os
+import itertools
 import ast
 from datetime import datetime
+import torch
 
+
+def bw_transform(x):
+    """Transform rgb separated balls to a single color_channel."""
+    x = x.sum(2)
+    x = torch.clamp(x, 0, 1)
+    x = torch.unsqueeze(x, 2)
+    return x
 
 # Custom argparser.
 def str_to_float(argument):
@@ -80,7 +89,7 @@ class ExperimentLogger():
         self.performance_str = ','.join(self.attributes)+'\n'
 
         # Make Experiment folder and save config.
-        if not self.c.nolog:
+        if not self.c.nolog and not self.c.keep_folder:
             self.exp_dir = self.make_dir()
             self.img_dir = os.path.join(self.exp_dir, 'imgs')
             os.makedirs(self.img_dir)
@@ -91,9 +100,29 @@ class ExperimentLogger():
             with open(self.performance_file, 'w') as f:
                 f.write(self.performance_str)
 
+        elif not self.c.nolog and self.c.keep_folder:
+            if self.c.checkpoint_path is None:
+                raise ValueError(
+                    'Keep folder only useful for restoring from folder!')
+            self.exp_dir = '/'.join(self.c.checkpoint_path.split('/')[:-1])
+
         else:
             self.exp_dir = os.path.join(self.c.experiment_dir, 'tmp')
-            print('logging disabled')
+            if not os.path.exists(self.exp_dir):
+                os.makedirs(self.exp_dir)
+
+        self.rollout_gifs_dir = os.path.join(self.exp_dir, 'gifs')
+        if not os.path.exists(self.rollout_gifs_dir):
+            os.makedirs(self.rollout_gifs_dir)
+
+        self.rollout_states_dir = os.path.join(self.exp_dir, 'states')
+        if not os.path.exists(self.rollout_states_dir):
+            os.makedirs(self.rollout_states_dir)
+
+        self.checkpoint_dir = os.path.join(self.exp_dir, 'checkpoints')
+        if not os.path.exists(self.checkpoint_dir):
+            os.makedirs(self.checkpoint_dir)
+
 
     def make_dir(self):
         """Find current run number and create folder."""
@@ -147,3 +176,52 @@ class ExperimentLogger():
         if not self.c.nolog:
             with open(self.performance_file, 'a') as f:
                 f.write(log_str)
+
+def match_states(predicted, true, match_idxs=[0,1], time_frame=5):
+    """Given find permutation of states which minimises position error.
+    
+    Finds a single global permutation for the sequence.
+    Args:        
+        predicted, true (torch.Tensor), 2 x (n, T, o, cl): n sequences of length
+            T for o objects.
+        match_idxs (list(ints)): Indexes of last dimension of predicted and real
+            to use for Euclidian distance matching.
+        time_frame: Number of time steps to consider in match making. After some
+            steps, the system is too chaotic, to be useful for matching.
+
+    Returns:
+        predicted_permuted (torch.Tensor), (n, T, o, cl): Prediction permuted,
+            s.t. Euclidian difference to real is minimised.
+
+    """
+    predicted, true = torch.from_numpy(predicted), torch.from_numpy(true)
+    pred_match = predicted[..., match_idxs]
+    true_match = true[..., match_idxs]
+
+    T = time_frame
+    errors = []
+    permutations = list(itertools.permutations(range(0, true.shape[2])))
+
+    for perm in permutations:
+        error = ((pred_match[:, :T, perm] - true_match[:, :T])**2).sum(-1)
+        error = torch.sqrt(error).mean((1, 2))
+        errors += [error]
+        """sum_k/T(sum_j/o(root(sum_i((x_i0-x_i1)**2))))
+           sum_i over x and y coordinates -> root(sum squared) is
+           distance of objects for that permutation. sum j is then over
+           all objects in image and sum_k over all images in sequence.
+           that way we do 1 assignment of objects over whole sequence!
+           this loss will now punish id swaps over sequence. sum_j and
+           _k are mean. st. we get the mean distance to true position
+        """
+    # shape (n, o!)
+    errors = torch.stack(errors, 1)
+    # sum to get error per image
+    _, idx = errors.min(1)
+    # idx now contains a single winning permutation per sequence!
+    selector = list(zip(range(idx.shape[0]), idx.cpu().tolist()))
+    pred_matched = [predicted[i, :, permutations[j]] for i, j in selector]
+    pred_matched = torch.stack(pred_matched, 0)
+
+    return pred_matched.cpu().numpy()
+

@@ -370,7 +370,7 @@ class Supair(nn.Module):
 
         params = spn.get_sum_params()
 
-        max_idxs = {vec: np.argmax(p.detach().numpy(), 0)
+        max_idxs = {vec: np.argmax(p.cpu().detach().numpy(), 0)
                     for (vec, p) in params.items()}
 
         mpe_img = spn.reconstruct(max_idxs, 0, sample=False)
@@ -494,7 +494,12 @@ class Supair(nn.Module):
             obj_mask = F.grid_sample(obj_patch, grid)
             reconstructions += obj_mask
 
-        return reconstructions.view([*z.shape[:2], self.c.channels, w, h])
+        reconstructions = reconstructions.view(
+            [*z.shape[:2], self.c.channels, w, h])
+        reconstructions = torch.clamp(reconstructions, 0, 1)
+
+        return reconstructions
+
 
     def forward(self, x):
         """Get supair ELBO of given sequence.

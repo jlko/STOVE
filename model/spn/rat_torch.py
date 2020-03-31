@@ -128,7 +128,7 @@ class GaussVector(NodeVector):
             my_sample = np.random.normal(self.means[:, node_num],
                                          np.sqrt(self.sigma[:, node_num]))
         else:
-            my_sample = self.means[:, node_num].detach().numpy()
+            my_sample = self.means[:, node_num].cpu().detach().numpy()
         full_sample = np.zeros((self.num_dims,))
         # print(self.num_dims, full_sample.shape)
         full_sample[self.scope] = my_sample

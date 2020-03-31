@@ -11,7 +11,7 @@ class SupStoveConfig(StoveConfig):
     supairvised = True  # for easy identification in logs
 
     # Model/training config
-    num_epochs = 300
+    num_epochs = 400
     # Number of visible frames, 2 less than for full model bc skip=0
     num_visible = 6
     num_rollout = 8  # Number of rollout frames
@@ -20,21 +20,19 @@ class SupStoveConfig(StoveConfig):
     cl = 16  # state code length per object
     # careful: affects magnitude of error
     discount_factor = 0.98  # discount factor for loss from rollouts
-    learning_rate = 0.0005
+    learning_rate = 0.002
+    min_learning_rate = 0.0002
+    debug_anneal_lr = 20000
 
     # Data config
-    num_episodes = 1000  # The number of episodes
-    num_frames = 100  # The number of frames perFalse episode
-    width = 32
-    height = 32
-    channels = 1
     num_obj = 3  # the number of object
 
     # try to get supairvised running
-    use_supair = False
+    load_encoder = None
     debug_disable_v_error = False
     debug_disable_v_diff_error = False
 
     # get rid of spike
-    debug_rollout = True
-    debug_rollout_training = True
+    debug_rollout = True  # run core for directly observed states to init latent
+    debug_rollout_training = True  # do the above already during training
+    debug_add_noise = False

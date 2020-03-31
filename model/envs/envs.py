@@ -155,8 +155,8 @@ class PhysicsEnv:
     """Base class for the physics environments."""
 
     def __init__(self, n=3, r=1., m=1., hw=10, granularity=5, res=32, t=1.,
-                 init_v_factor=0, friction_coefficient=0., seed=None,
-                 sprites=False):
+                 init_v_factor=None, friction_coefficient=0., seed=None,
+                 sprites=False, use_colors=None):
         """Initialize a physics env with some general parameters.
 
         Args:
@@ -195,10 +195,13 @@ class PhysicsEnv:
         self.fric_coeff = friction_coefficient
         self.v_rotation_angle = 2 * np.pi * 0.05
 
-        if n > 3:
-            self.use_colors = True
+        if use_colors is None:
+            if n < 3:
+                self.use_colors = False
+            else:
+                self.use_colors = True
         else:
-            self.use_colors = False
+            self.use_colors = use_colors
 
         if sprites:
             self.renderer = spriteworld_renderers.PILRenderer(
@@ -219,10 +222,14 @@ class PhysicsEnv:
         else:
             self.draw_image = self.draw_balls
 
-    def init_v(self, init_v_factor):
+    def init_v(self, init_v_factor=None):
         """Randomly initialise velocities."""
         v = np.random.normal(size=(self.n, 2))
         v = v / np.sqrt((v ** 2).sum()) * .5
+
+        if init_v_factor is not None:
+            v = v * np.random.uniform(1/init_v_factor, init_v_factor)
+
         return v
 
     def init_x(self):
@@ -302,10 +309,6 @@ class PhysicsEnv:
 
     def draw_balls(self):
         """Render balls on canvas."""
-        if self.n > 3 and not self.use_colors:
-            raise ValueError(
-                'Must self.use_colors if self.n > 3.')
-
         if self.n > 6:
             raise ValueError(
                 'Max self.n implemented currently is 6.')
@@ -328,7 +331,8 @@ class PhysicsEnv:
                 img[:, :, 2] += colors[i, 2] * factor
 
             else:
-                img[:, :, i] += factor
+                idx = i % 3
+                img[:, :, idx] += factor
 
         img[img > 1] = 1
 
@@ -363,13 +367,17 @@ class BillardsEnv(PhysicsEnv):
     """Billiards or Bouncing Balls environment."""
 
     def __init__(self, n=3, r=1., m=1., hw=10, granularity=5, res=32, t=1.,
-                 init_v_factor=0, friction_coefficient=0., seed=None, sprites=False):
+                 init_v_factor=None, friction_coefficient=0., seed=None,
+                 sprites=False, use_colors=None, drift=False):
         """Initialise arguments of parent class."""
         super().__init__(n, r, m, hw, granularity, res, t, init_v_factor,
-                         friction_coefficient, seed, sprites)
+                         friction_coefficient, seed, sprites, use_colors)
 
         # collisions is updated in step to measure the collisions of the balls
         self.collisions = 0
+
+        # no collisions between objects!
+        self.drift = drift
 
     def simulate_physics(self, actions):
         # F = ma = m dv/dt ---> dv = a * dt = F/m * dt
@@ -380,13 +388,16 @@ class BillardsEnv(PhysicsEnv):
             for z in range(2):
                 next_pos = self.x[i, z] + (v[i, z] * self.eps * self.t)
                 # collision at 0 wall
-                if not self.r[i] < next_pos:
+                if next_pos < self.r[i]:
                     self.x[i, z] = self.r[i]
                     v[i, z] = - v[i, z]
                 # collision at hw wall
-                elif not next_pos < (self.hw - self.r[i]):
+                elif next_pos > (self.hw - self.r[i]):
                     self.x[i, z] = self.hw - self.r[i]
                     v[i, z] = - v[i, z]
+
+        if self.drift:
+            return v
 
         # check for collisions with objects
         for i in range(self.n):
@@ -408,7 +419,8 @@ class BillardsEnv(PhysicsEnv):
                     if actions and j == 0:
                         v_j = 0
 
-                    new_v_i, new_v_j = self.new_speeds(self.m[i], self.m[j], v_i, v_j)
+                    new_v_i, new_v_j = self.new_speeds(
+                        self.m[i], self.m[j], v_i, v_j)
 
                     v[i] += w * (new_v_i - v_i)
                     v[j] += w * (new_v_j - v_j)
@@ -435,12 +447,12 @@ class GravityEnv(PhysicsEnv):
 
     def __init__(self, n=3, r=1., m=1., hw=10, granularity=5, res=32, t=1,
                  init_v_factor=0.18, friction_coefficient=0, seed=None,
-                 sprites=False):
+                 sprites=False, use_colors=False, drift=False):
         """Initialise arguments of parent class."""
 
         super().__init__(
             n, r, m, hw, granularity, res, t, init_v_factor,
-            friction_coefficient, seed, sprites)
+            friction_coefficient, seed, sprites, use_colors)
 
         self.G = 0.5
         self.K1 = self.G
@@ -574,28 +586,26 @@ class MonteCarloActionPolicy(ActionPolicy):
 
 
 def generate_fitting_run(env_class, run_len=100, run_num=1000, max_tries=10000,
-                         res=50, n=2, r=1., dt=0.01, gran=10, fc=0.3, hw=10,
-                         m=1., seed=None,
-                         init_v=None, check_overlap=False, sprites=False):
+                         res=50, n=2, r=1., dt=0.01, granularity=10, fc=0.3,
+                         hw=10, m=1., seed=None,
+                         init_v_factor=None, check_overlap=False, sprites=False,
+                         use_colors=None, drift=False):
     """Generate runs for environments.
 
     Integrated error checks. Parameters as passed to environments.
     """
-
-    if init_v is None:
-        init_v = [0.1]
-
     good_counter = 0
     bad_counter = 0
     good_imgs = []
     good_states = []
 
     for _try in tqdm(range(max_tries)):
-        _init_v = np.random.choice(init_v)
         # init_v is ignored for BillardsEnv
-        env = env_class(n=n, r=r, m=m, hw=hw, granularity=gran, res=res, t=dt,
-                        init_v_factor=_init_v, friction_coefficient=fc, seed=seed,
-                        sprites=sprites)
+        env = env_class(
+            n=n, r=r, m=m, hw=hw, granularity=granularity, res=res, t=dt,
+            init_v_factor=init_v_factor, friction_coefficient=fc, seed=seed,
+            sprites=sprites, use_colors=use_colors, drift=drift)
+
         run_value = 0
 
         all_imgs = np.zeros((run_len, *env.get_obs_shape()))
@@ -644,10 +654,11 @@ def generate_fitting_run(env_class, run_len=100, run_num=1000, max_tries=10000,
 
 
 def generate_data(save=True, test_gen=False, name='billiards', env=BillardsEnv,
-                  config=None):
+                  config=None, num_runs=None):
     """Generate data for billiards or gravity environment."""
+    if num_runs is None or test_gen:
+        num_runs = [1000, 300] if (save and not test_gen) else [2, 5]
 
-    num_runs = [1000, 300] if (save and not test_gen) else [2, 5]
     for run_types, run_num in zip(['train', 'test'], num_runs):
 
         # generate runs
@@ -675,6 +686,7 @@ def generate_data(save=True, test_gen=False, name='billiards', env=BillardsEnv,
 
 def generate_billiards_w_actions(ChosenTask=AvoidanceTask, save=True,
                                  config=None, test_gen=False):
+    """Generate action conditioned billiards data."""
     run_len = 100
     action_space = 9
     action_force = 0.6
@@ -743,15 +755,80 @@ def generate_billiards_w_actions(ChosenTask=AvoidanceTask, save=True,
         imageio.mimsave('data/avoidance.gif'.format(save), first_seq, fps=24)
 
 
-def main(script_args):
-    """Create standard collection of data sets."""
+def parse_wrapper(script_args):
+    """DRY wrapper around parse."""
     parser = argparse.ArgumentParser()
     parser.add_argument('--test-gen', dest='test_gen', action='store_true')
     parser.add_argument('--no-save', dest='save', action='store_false')
     args = parser.parse_args(script_args)
+    return args
 
-    config = {'res': 32, 'hw': 10, 'n': 3, 'dt': 1, 'm': 1., 'fc': 0,
-              'gran': 2, 'r': 1.2, 'check_overlap': False}
+
+def multi_billiards(script_args):
+    """Create billiards with 6 balls."""
+    args = parse_wrapper(script_args)
+
+    config = {
+        'res': 50, 'hw': 10, 'n': 6, 'dt': 1, 'm': 1., 'fc': 0,
+        'granularity': 10, 'r': 1, 'check_overlap': False, 'use_colors': False}
+
+    generate_data(
+        save=args.save, test_gen=args.test_gen, name='multibilliards',
+        env=BillardsEnv, config=config)
+
+
+def billiards_energy(script_args):
+    """Create billiards with varying total energy."""
+    args = parse_wrapper(script_args)
+
+    config = {
+        'res': 32, 'hw': 10, 'n': 3, 'dt': 1, 'm': 1., 'fc': 0,
+        'granularity': 10, 'r': 1.2, 'check_overlap': False,
+        'init_v_factor': args.init_v}
+
+    name = 'billiards_energy_{:.1f}'.format(args.init_v)
+
+    generate_data(
+        save=args.save, test_gen=args.test_gen, name=name,
+        env=BillardsEnv, config=config)
+
+
+def drift_runs(script_args):
+    """Create billiards with varying total energy."""
+    args = parse_wrapper(script_args)
+
+    config = {
+        'res': 32, 'hw': 10, 'n': 3, 'dt': 1, 'm': 1., 'fc': 0,
+        'granularity': 10, 'r': 1.2, 'check_overlap': False, 'drift': True}
+
+    name = 'billiards_drift'
+
+    generate_data(
+        save=args.save, test_gen=args.test_gen, name=name,
+        env=BillardsEnv, config=config)
+
+
+def billiards_smooth(script_args):
+    """Create billiards with varying total energy."""
+    args = parse_wrapper(script_args)
+
+    config = {
+        'res': 32, 'hw': 10, 'n': 3, 'dt': 1, 'm': 1., 'fc': 0,
+        'granularity': 10, 'r': 1.2, 'check_overlap': False, 'drift': False,}
+
+    name = 'billiards_smooth'
+
+    generate_data(
+        save=args.save, test_gen=args.test_gen, name=name,
+        env=BillardsEnv, config=config)
+
+def main(script_args):
+    """Create standard collection of data sets."""
+    args = parse_wrapper(script_args)
+
+    config = {
+        'res': 32, 'hw': 10, 'n': 3, 'dt': 1, 'm': 1., 'fc': 0,
+        'granularity': 10, 'r': 1.2, 'check_overlap': False}
 
     generate_data(
         save=args.save, test_gen=args.test_gen, name='billiards',
@@ -761,8 +838,10 @@ def main(script_args):
     # generate_data(
     #     test_gen=args.test_gen, name='billards_sprites', env=BillardsEnv, config=config)
 
-    config = {'res': 50, 'hw': 30, 'n': 3, 'dt': 1, 'm': 4., 'fc': 0,
-              'init_v': [0.55], 'gran': 50, 'r': 2, 'check_overlap': True}
+    config = {
+        'res': 50, 'hw': 30, 'n': 3, 'dt': 1, 'm': 4., 'fc': 0,
+        'init_v_factor': 0.55, 'granularity': 50, 'r': 2,
+        'check_overlap': True}
 
     generate_data(
         save=args.save, test_gen=args.test_gen, name='gravity',

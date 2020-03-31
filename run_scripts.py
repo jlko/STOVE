@@ -35,6 +35,10 @@ if __name__ == '__main__':
     parser.add_argument('--supervised', dest='supervised',
                         action='store_true')
 
+    # Create billiards with more than 3 balls.
+    parser.add_argument('--multi-billiards', dest='multi_billiards',
+                        action='store_true')
+
 
     args, _ = parser.parse_known_args()
     script_args = sys.argv[2:]
@@ -89,5 +93,9 @@ if __name__ == '__main__':
         supervised_args.update({'supairvised': True})
         trainer = main.main(sh_args=supervised_args)
         trainer.train()
+
+    if args.multi_billiards:
+        from model.envs import envs
+        envs.multi_billiards(script_args)
 
     print("End of run_scripts.")

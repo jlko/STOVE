@@ -13,3 +13,4 @@ class SupStove(nn.Module):
         super().__init__()
         self.sup = Supervisor(config)
         self.dyn = SupervisedDynamics(config)
+        self.c = config

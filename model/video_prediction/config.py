@@ -13,9 +13,9 @@ class StoveConfig:
     """Experiment Parameters"""
     description = 'unnamed experiment'
     nolog = False
-    experiment_dir = './experiments/stove/unsorted'
+    experiment_dir = './experiments/unsorted'
     checkpoint_path = None  # if set to valid checkpoint, said checkpoint is loaded
-    load = False  # Load parameters from checkpoint file
+    keep_folder = False # keep same run folder if loading from checkpoint
     action_conditioned = None  # set by main.py depending on data loaded
     random_seed = None  # seed for random spn region graph (auto set in main.py)
     supairvised = False
@@ -26,20 +26,21 @@ class StoveConfig:
     # (essentially sets batch_size to 1, makes calling train() for debugging fast)
 
     """Data Parameters"""
-    traindata = './data/billiards_train_data.pkl'
-    testdata = './data/billiards_test_data.pkl'
+    traindata = './data/billiards_train.pkl'
+    testdata = './data/billiards_test.pkl'
     num_visible = 8  # 6  # Number of visible frames per sequence.
     num_rollout = 8  # Number of rollout frames (currently, only used in testing).
     frame_step = 1  # Stepsize when observing frames
     num_episodes = 1000  # no. of generated sequences
-    num_frames = 100  # no. of frames per sequence
+    num_frames = None  # auto set in main.py
     width = None  # auto set in main.py
     height = None  # auto set in main.py
     channels = 1  # debug_bw is enabled
-    num_obj = 3  # the number of object
+    num_obj = None  # auto set in main.py
     r = None  # object radius, for rollout rendering (auto set in main.py)
     coord_lim = None  # max of true env states, for error (auto set in main.py)
     action_space = None  # dim of action_space, for error (auto set in main.py)
+    debug_add_noise = False  # add noise to ground truth states
 
     """Training Configuration"""
     batch_size = 256
@@ -64,8 +65,8 @@ class StoveConfig:
     print_every = 100
     plot_every = 1e19  # basically disable plotting
     save_every = 10000
+    long_rollout_every = 10000
     visdom = False
-    rollout_idxs = [0, 10, 20, 30, 40, 100]  # idx of testset for rollout
     debug_extend_plots = False
 
     """Model Config: Stove"""
@@ -125,3 +126,9 @@ class StoveConfig:
     debug_obj_spn = False  # use simple gauss for objects instead of SPN
     debug_simple_bg_var = 0.1  # debug 0.35
     debug_simple_obj_var = 0.2
+    # type of object matching ['greedy', '3_only', 'volatile']
+    debug_match_objects = '3_only'
+    # test hypothesis that reusing dynamics for inference is critical
+    debug_no_reuse = False
+    # disable explicit velocity in model
+    debug_no_velocity = False

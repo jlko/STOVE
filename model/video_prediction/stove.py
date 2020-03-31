@@ -6,7 +6,7 @@ from torch.distributions import Normal
 
 from .dynamics import Dynamics
 from .supair import Supair
-
+from ..utils.utils import bw_transform
 
 class Stove(nn.Module):
     """STOVE: Structured object-aware video prediction model.
@@ -37,6 +37,19 @@ class Stove(nn.Module):
         self.z_std_prior = Normal(
             torch.Tensor([0.1], device=self.c.device),
             torch.Tensor([0.01], device=self.c.device))
+
+        if self.c.debug_match_objects == '3_only':
+            if self.c.num_obj != 3:
+                raise ValueError(
+                    'Matching Function not compatible w/ specified'\
+                    + 'number of objects.')
+            self.match_objects = self._3_only_match_objects
+        elif self.c.debug_match_objects == 'volatile':
+            self.match_objects = self._volatile_match_objects
+        elif self.c.debug_match_objects == 'greedy':
+            self.match_objects = self._greedy_match_objects
+        else:
+            raise ValueError("Specify valid self.c.debug_match_ojects.")
 
     def v_from_state(self, z_sup):
         """Get full state by combining supair states.
@@ -135,8 +148,20 @@ class Stove(nn.Module):
             z_s = torch.cat([z_s, torch.zeros_like(mean_l)], -1)
 
         else:
-            mean = torch.cat([mean_s, mean_xv, mean_l], -1)
-            std = torch.cat([std_s, std_xv, std_l], -1)
+            if self.c.debug_no_reuse:
+                mean = torch.cat([mean_s, m_sup_xv, torch.zeros_like(mean_l)], -1)
+                std = torch.cat([std_s, s_sup_xv, torch.ones_like(std_l)], -1)
+            if self.c.debug_no_velocity:
+                mean = torch.cat(
+                    [mean_s, mean_xv[...,:2],
+                     torch.zeros_like(mean_xv[..., 2:]), mean_l], -1)
+                std = torch.cat(
+                    [std_s, std_xv[..., :2],
+                     torch.ones_like(std_xv[..., 2:]), std_l], -1)
+            else:
+                mean = torch.cat([mean_s, mean_xv, mean_l], -1)
+                std = torch.cat([std_s, std_xv, std_l], -1)
+
             dist = Normal(mean, std)
 
             z_s = dist.rsample()
@@ -172,7 +197,8 @@ class Stove(nn.Module):
 
         return log_lik
 
-    def match_objects(self, z_sup, z_sup_std=None, obj_appearances=None):
+    def _3_only_match_objects(self, z_sup, z_sup_std=None,
+                              obj_appearances=None):
         """Match objects over sequence.
 
         No fixed object oder is enforced in SuPAIR. We match object states
@@ -302,7 +328,8 @@ class Stove(nn.Module):
         else:
             return z_sup_matched
 
-    def _match_objects(self, z_sup, z_sup_std=None, obj_appearances=None):
+    def _volatile_match_objects(self, z_sup, z_sup_std=None,
+                                obj_appearances=None):
         """Match objects over sequence.
 
         No fixed object oder is enforced in SuPAIR. We match object states
@@ -386,6 +413,90 @@ class Stove(nn.Module):
         # transform back again
         z_sup_matched = 2 * z_matched[..., :4] - 1
 
+        if obj_appearances is not None:
+            obj_appearances_matched = z_matched[..., 4:7]
+
+        if z_sup_std is None and obj_appearances is not None:
+            return z_sup_matched, obj_appearances_matched
+
+        elif z_sup_std is not None and obj_appearances is None:
+            z_sup_std_matched = z_matched[..., 4:8]
+            return z_sup_matched, z_sup_std_matched, None
+
+        elif z_sup_std is not None and obj_appearances is not None:
+            z_sup_std_matched = z_matched[..., 4+3:8+3]
+            return z_sup_matched, z_sup_std_matched, obj_appearances_matched
+        else:
+            return z_sup_matched
+
+    def _greedy_match_objects(self, z_sup, z_sup_std=None,
+                              obj_appearances=None):
+        """Match objects over sequence.
+
+        No fixed object oder is enforced in SuPAIR. We match object states
+        between timesteps by finding the object order which minimizes the
+        distance between states at t and t+1.
+
+        Version 3: Fast bipartite greedy matching.
+
+        Args:
+            z_sup, z_sup_std (torch.Tensor), 2 * (n, T, o, 4): SuPAIR state
+                params. Contain id swaps b/c SuPAIR has no notion of time.
+            obj_appearances (torch.Tensor), (n, T, o, 3): Appearance information
+                may be used to aid matching.
+        Returns:
+            Permuted version of input arguments.
+
+        """
+
+        # scale to 0, 1
+        z = (z_sup + 1) / 2
+        m_idx = [2, 3]
+
+        if obj_appearances is not None:
+            # colors are already in 0, 1
+            z = torch.cat([z, obj_appearances], -1)
+
+            if self.c.debug_match_appearance:
+                # add color channels to comparison
+                m_idx += [4, 5, 6]
+
+        if z_sup_std is not None:
+            z = torch.cat([z, z_sup_std], -1)
+
+        T = z_sup.shape[1]
+        num_obj = self.c.num_obj
+
+        # sequence of matched zs
+        z_matched = torch.zeros_like(z)
+
+        z_matched[:, 0] = z[:, 0]
+        for t in range(1, T):
+            # only used to get indices, do not want gradients
+            curr = z[:, t, :, m_idx]
+            curr = curr.unsqueeze(1).repeat(1, num_obj, 1, 1)
+            prev = z_matched[:, t-1, :, m_idx]
+            prev = prev.unsqueeze(2).repeat(1, 1, num_obj, 1)
+            curr, prev = curr.detach(), prev.detach()
+            # shape is now (n, o1, o2)
+            # o1 is repeat of current, o2 is repeat of previous
+            # indexing along o1, we will go through the current values
+            # we want to keep o1 fixed, at find minimum along o2
+            errors = ((prev - curr)**2).sum(-1)
+            batch, num_obj, _ = errors.shape
+            perm_mat = torch.zeros_like(errors)
+            for n in range(z.shape[2]):
+                idx = torch.argmin(errors.view(batch, -1), 1)
+                idx_x = idx // num_obj
+                idx_y = idx % num_obj
+                perm_mat[range(batch), idx_x, idx_y] = 1.
+                errors[range(batch), idx_x, :] = torch.max(errors) + 1
+                errors[range(batch), :, idx_y] = torch.max(errors) + 1
+
+            z_matched[:, t] = torch.matmul(perm_mat, z[:, t])
+
+        # transform back again
+        z_sup_matched = 2 * z_matched[..., :4] - 1
         if obj_appearances is not None:
             obj_appearances_matched = z_matched[..., 4:7]
 
@@ -700,12 +811,18 @@ class Stove(nn.Module):
             z_dyn_stds = []
         if actions is not None:
             core_actions = actions.transpose(0, 1)
+            action_len = actions.shape[1]
         else:
-            core_actions = num * [None]
+            core_actions = 1 * [None]
+            action_len = 1
+
+        # for long rollouts we might not have ground truth actions
+        # just repeat actions
+
 
         for t in range(1, num+1):
             tmp, reward = self.dyn(
-                z[t-1][..., 2:], 0, core_actions[t-1], appearance)
+                z[t-1][..., 2:], 0, core_actions[(t-1)%action_len], appearance)
             z_tmp, z_dyn_std_tmp = tmp[..., :cl//2], tmp[..., cl//2:]
             rewards.append(reward)
 
@@ -766,14 +883,13 @@ class Stove(nn.Module):
         # save color image for apperance information
         x_color = x
         if self.c.debug_bw:
-            x = x.sum(2)
-            x = torch.clamp(x, 0, 1)
-            x = torch.unsqueeze(x, 2)
+            x = bw_transform(x)
         else:
             x = x_color
 
         if pretrain:
-            return self.sup(x)
+            elbo, prop_dict = self.sup(x)
+            return elbo, prop_dict, 0
         else:
             if self.c.debug_core_appearance or self.c.debug_match_appearance:
                 return self.stove_forward(x, actions=actions, x_color=x_color)

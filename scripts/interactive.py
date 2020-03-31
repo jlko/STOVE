@@ -31,7 +31,7 @@ def tile(a, dim, n_tile):
     return torch.index_select(a, dim, order_index)
 
 
-def init_model(model):
+def init_model(model, action=3):
     """For STOVE as world model: Initialise env for STOVE generation.
 
     Args:
@@ -44,11 +44,11 @@ def init_model(model):
     real_env = make_env()
     initial_imgs = np.zeros((2, 8, 32, 32, 3))
     initial_actions = np.zeros((2, 8, 9))
-    initial_actions[:, :, 3] = 1.
+    initial_actions[:, :, action] = 1.
     initial_actions = torch.tensor(initial_actions)
 
     for i in range(8):
-        ret_img, _, _, _ = real_env.step(3)
+        ret_img, _, _, _ = real_env.step(action)
         initial_imgs[:, i] = ret_img
 
     _, init_state, _ = model(

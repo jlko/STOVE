@@ -25,7 +25,7 @@ class Supervisor(nn.Module):
         # loading).
         self.constrain_zp = partial(Supair.constrain_zp, self)
         self.v_from_state = partial(Stove.v_from_state, self)
-        self.match_objects = partial(Stove.match_objects, self)
+        self.match_objects = partial(Stove._3_only_match_objects, self)
         self.fix_supair = partial(Stove.fix_supair, self)
 
     def forward(self, x):

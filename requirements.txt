@@ -87,7 +87,6 @@ parso=0.5.1=py_0
 pcre=8.43=he6710b0_0
 pexpect=4.7.0=py37_0
 pickleshare=0.7.5=py37_0
-pillow=6.1.0=py37h34e0f95_0
 pip=19.2.2=py37_0
 prometheus_client=0.7.1=py_0
 prompt_toolkit=2.0.9=py37_0

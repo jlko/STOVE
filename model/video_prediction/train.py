@@ -4,6 +4,7 @@ import os
 import itertools
 import time
 import numpy as np
+import imageio
 
 import torch
 import torch.optim as optim
@@ -11,8 +12,8 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from ..utils.visualize import (
-    animate, plot_boxes, plot_grad_flow, plot_patches, plot_bg)
-from ..utils.utils import ExperimentLogger
+    plot_boxes, plot_grad_flow, plot_patches, plot_bg, get_reward_annotation)
+from ..utils.utils import ExperimentLogger, bw_transform
 
 
 class AbstractTrainer:
@@ -48,10 +49,11 @@ class AbstractTrainer:
             amsgrad=self.c.debug_amsgrad)
 
         if self.c.load_encoder is not None:
+            print('Pre-loading encoder from checkpoint!')
             self.load_encoder()
 
         if not self.c.supair_grad:
-            self.disable_encoder_grad()
+            self.disable_supair_grad()
 
         # if we restore from checkpoint, also restore epoch and step
         self.epoch_start, self.step_start = 0, 0
@@ -75,14 +77,14 @@ class AbstractTrainer:
 
     def save(self, epoch, step):
         """Save model dict, optimizer and progress indicator."""
-        path = os.path.join(self.logger.exp_dir, "checkpoint")
+        path = os.path.join(self.logger.checkpoint_dir, 'ckpt')
 
         torch.save({
             'epoch': epoch,
             'step': step,
             'model_state_dict': self.stove.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            }, path + '_{}'.format(step))
+            }, path + '_{:05d}'.format(step))
 
 
         torch.save({
@@ -140,14 +142,21 @@ class AbstractTrainer:
 
     def disable_supair_grad(self):
         """Disable gradient for SuPAIR if desired."""
-        for p in self.stove.obj_spn.parameters():
-            p.requires_grad = False
-        for p in self.stove.bg_spn.parameters():
-            p.requires_grad = False
-        for p in self.stove.encoder.parameters():
+        for p in self.stove.sup.parameters():
             p.requires_grad = False
         for n, p in self.stove.named_parameters():
             print('Gradients for {} enabled: {}'.format(n, p.requires_grad))
+
+    def init_t(self, tensor):
+        """Move tensor to self.c.device and cast to self.c.dtype."""
+        return tensor.type(self.c.dtype).to(device=self.c.device)
+
+    def adjust_learning_rate(self, optimizer, value, step):
+        """Adjust learning rate during training."""
+        lr = self.c.learning_rate * np.exp(-step / value)
+        lr = max(lr, self.c.min_learning_rate)
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
 
     def prediction_error(self):
         """Abstract method."""
@@ -367,7 +376,8 @@ class Trainer(AbstractTrainer):
 
         if not self.c.nolog:
             add = '_rollout' if future else ''
-            save_path = os.path.join(self.logger.img_dir, '{:05d}{}.png'.format(step_counter, add))
+            save_path = os.path.join(
+                self.logger.img_dir, '{:05d}{}.png'.format(step_counter, add))
         else:
             save_path = None
 
@@ -395,17 +405,6 @@ class Trainer(AbstractTrainer):
 
             plot_patches(patches, marg_patch, overlap, patches_ll, self.c)
 
-    def adjust_learning_rate(self, optimizer, value, step):
-        """Adjust learning rate during training."""
-        lr = self.c.learning_rate * np.exp(-step / value)
-        lr = max(lr, self.c.min_learning_rate)
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
-
-    def init_t(self, tensor):
-        """Move tensor to self.c.device and cast to self.c.dtype."""
-        return tensor.type(self.c.dtype).to(device=self.c.device)
-
     def train(self, num_epochs=None):
         """Run training loop.
 
@@ -418,7 +417,8 @@ class Trainer(AbstractTrainer):
         step_counter = self.step_start
 
         start = time.time()
-        self.test(step_counter, start)
+        if not self.c.supair_only:
+            self.test(step_counter, start)
 
         if num_epochs is None:
             num_epochs = self.c.num_epochs
@@ -490,6 +490,9 @@ class Trainer(AbstractTrainer):
                 if step_counter % self.c.save_every == 0:
                     self.save(epoch, step_counter)
 
+                if step_counter % self.c.long_rollout_every == 0:
+                    self.long_rollout(idx=[0, 1])
+
                 if self.c.debug_test_mode and not self.c.supair_only:
                     self.save(0, 0)
                     self.test(step_counter, now)
@@ -505,9 +508,8 @@ class Trainer(AbstractTrainer):
                 break
 
         # Create some more rollouts at the end of training
-        if not self.c.debug_test_mode:
-            for idx in self.c.rollout_idxs:
-                self.long_rollout(step_counter, idx)
+        if not self.c.debug_test_mode and not self.c.supair_only:
+            self.long_rollout(step_counter=step_counter)
 
         # Save model in final state
         if not self.c.nolog:
@@ -668,18 +670,14 @@ class Trainer(AbstractTrainer):
             if i > 7:
                 break
 
-        self.long_rollout(step_counter)
         self.stove.train()
 
     @torch.no_grad()
-    def long_rollout(self, step_counter, idx=0, with_logging=True, actions=None):
+    def long_rollout(self, idx=None, actions=None, step_counter=None):
         """Create one long rollout and save it as an animated GIF.
 
         Args:
-            step_counter (int): Current step.
-            idx (int): Index of sequence in test data set.
-            with_logging (int): Also save errors over sequences in csv for
-                rollout plots.
+            idx (list): Indexes of sequence in test data set.
             actions (n, T): Pass actions different from those in the test
                 set to see if model has understood actions.
 
@@ -687,10 +685,20 @@ class Trainer(AbstractTrainer):
         self.stove.eval()
 
         step = self.c.frame_step
-        visible = self.c.num_visible
-        batch_size = self.c.batch_size
+        vis = self.c.num_visible
+        batch_size = self.test_dataset.total_img.shape[0]
+        run_len = self.test_dataset.total_img.shape[1]
+        # repeat actions for action conditioned setting for long rollout
+        states_save_len = 500
         skip = self.c.skip
-        long_rollout_length = self.c.num_frames // step - visible
+        max_rollout = self.c.num_frames // step - vis
+
+        if states_save_len > max_rollout:
+            print("Wrapping around actions for long rollouts.")
+
+        # idx of items for gifs
+        if idx is None:
+            idx = list(range(20))
 
         np_total_images = self.test_dataset.total_img
         np_total_labels = self.test_dataset.total_data
@@ -708,15 +716,16 @@ class Trainer(AbstractTrainer):
 
             total_actions = self.init_t(torch.tensor(
                 total_actions[:batch_size, ::step]))
-            action_input = total_actions[:, :visible]
+            action_input = total_actions[:, :vis]
 
             total_rewards = self.test_dataset.total_rewards
             total_rewards = total_rewards[:batch_size, ::step]
-            real_rewards = total_rewards[idx, self.c.skip:, 0]
+            real_rewards = total_rewards[:, self.c.skip:, 0]
 
             # need some actions for rollout
-            true_future_actions = total_actions[:, visible:(visible+long_rollout_length)]
-            action_recon = total_actions[idx:idx+2, :(visible+long_rollout_length)]
+            true_future_actions = total_actions[
+                :, vis:(vis+max_rollout)]
+            action_recon = total_actions[:, :(vis+max_rollout)]
 
         else:
             action_input = None
@@ -724,7 +733,7 @@ class Trainer(AbstractTrainer):
             action_recon = None
 
         # first obtain reconstruction of input.
-        stove_input = total_images[:, :visible]
+        stove_input = total_images[:, :vis]
         _, prop_dict2, rewards_recon = self.stove(
             stove_input, self.c.plot_every, action_input)
         z_recon = prop_dict2['z']
@@ -736,7 +745,7 @@ class Trainer(AbstractTrainer):
             appearances = None
 
         z_pred, rewards_pred = self.stove.rollout(
-            z_recon[:, -1], num=long_rollout_length, actions=true_future_actions,
+            z_recon[:, -1], num=states_save_len, actions=true_future_actions,
             appearance=appearances)
 
         # assemble complete sequences as concat of reconstruction and prediction
@@ -744,58 +753,95 @@ class Trainer(AbstractTrainer):
         simu_rollout = z_pred.detach()
         simu = torch.cat([simu_recon, simu_rollout], 1)
 
-        if not self.c.nolog and with_logging:
-            # get prediction error over long sequence for loogging
-            real_labels = total_labels[:, skip:(visible+long_rollout_length)]
-            error_dict = self.prediction_error(
-                simu[..., 2:6], real_labels, return_velocity=True, return_full=True,
-                return_id_swaps=False)
+        # get prediction error over long sequence for loogging
+        real_labels = total_labels[:, skip:(vis+max_rollout)]
+        predicted_labels = simu[:, :(vis+max_rollout)-skip, :, 2:6]
+        error_dict = self.prediction_error(
+            predicted_labels, real_labels,
+            return_velocity=True, return_full=True, return_id_swaps=False)
 
-            for name, data in error_dict.items():
-                file = os.path.join(self.logger.exp_dir, '{}.csv'.format(name))
-                with open(file, 'a') as f:
-                    f.write(','.join(['{:.6f}'.format(i) for i in data])+'\n')
-
-        # only select positions and translate to [0, 10] frame
-        simu = simu[idx, :, :, 2:4].detach().cpu().numpy()
-
+        for name, data in error_dict.items():
+            file = os.path.join(self.logger.exp_dir, '{}.csv'.format(name))
+            with open(file, 'a') as f:
+                f.write(','.join(['{:.6f}'.format(i) for i in data])+'\n')
+    
         # also get a reconstruction of z along entire sequence
-        stove_input = total_images[idx:idx+2, :(visible+long_rollout_length)]
-        elbo, prop_dict3, recon_reward = self.stove(
+        stove_input = total_images[:, :(vis+max_rollout)]
+        elbo, prop_dict3, recon_reward_total = self.stove(
             stove_input, self.c.plot_every, actions=action_recon)
-        recon = prop_dict3['z'][0, :, :, 2:4]
-        recon = recon.cpu().numpy()
-        recon_reward = recon_reward.cpu().numpy()[0].squeeze()
-
-        real = np_total_labels[idx, self.c.skip:, :, :2]
+        recon = prop_dict3['z'].detach()
+        recon_reward_total = recon_reward_total.cpu().numpy()
 
         if self.c.action_conditioned:
             # add rewards to gif
-            rewards_model = torch.cat([rewards_recon, rewards_pred], 1).squeeze()[idx]
+            rewards_model = torch.cat(
+                [rewards_recon, rewards_pred], 1).squeeze()
             rewards_model = rewards_model.detach().cpu().numpy()
 
-        # Make Gifs
-        gif_path = os.path.join(self.logger.exp_dir, 'gifs')
+        # log states from recon and reward
+        if step_counter is not None:
+            add = ['', '_{:05d}'.format(step_counter)]
+        else:
+            add = ['']
 
-        print("Make GIFs in {}".format(gif_path))
+        states_dir = self.logger.rollout_states_dir
+        save = lambda name, data, a: np.save(
+            os.path.join(
+                states_dir, '{}{}'.format(name, a)),
+            data.cpu().numpy() if isinstance(data, torch.Tensor) else data)
 
-        gifs = [real, simu, simu, recon, recon]
+        for a in add:
+            save('rollout_states', simu, a)
+            save('recon_states', recon, a)
+            if self.c.action_conditioned:
+                save('rollout_rewards', rewards_model, a)
+                save('recon_rewards', recon_reward_total, a)
+        save('real_states', real_labels, '')
         if self.c.action_conditioned:
-            rewards = [real_rewards, rewards_model, rewards_model,
-                       recon_reward, recon_reward]
+            save('real_rewards', real_rewards, '')
+
+        # Make Gifs
+        gif_path = self.logger.rollout_gifs_dir
+        print("Make GIFs in {}".format(gif_path))
+        names = ['real', 'rollout', 'recon']
+
+        if self.c.channels != 3:
+            stove_input = bw_transform(stove_input)
+
+        gifs = [
+            stove_input[idx, skip:],
+            self.stove.reconstruct_from_z(simu[idx, :(vis+max_rollout)-skip]),
+            self.stove.reconstruct_from_z(recon[idx]),
+            ]
+
+        gifs = [gif.detach().cpu().numpy() for gif in gifs]
+
+        if self.c.action_conditioned:
+            rewards = [
+            real_rewards[idx],
+            rewards_model[idx, :(vis+max_rollout)-skip],
+            recon_reward_total[idx]]
         else:
             rewards = len(gifs) * [None]
 
-        names = ['real_{:02d}'.format(idx),
-                 'rollout_{:02d}'.format(idx),
-                 'rollout_{:02d}_{:05d}'.format(idx, step_counter),
-                 'recon_{:02d}'.format(idx),
-                 'recon_{:02d}_{:05d}'.format(idx, step_counter)]
-
         for gif, name, reward in zip(gifs, names, rewards):
-            animate(
-                gif, gif_path, name, size=self.c.coord_lim,
-                res=self.c.width, r=self.c.r, rewards=reward)
+
+            gif = (255 * gif).reshape(
+                -1, self.c.channels, self.c.width, self.c.width).astype('uint8')
+            gif = np.squeeze(gif)
+
+            if reward is not None:
+                reward = reward.reshape(-1)
+                gif[reward < 0.5] = 255 - gif[reward < 0.5]
+                res = self.c.width
+                reward_annotations = get_reward_annotation(
+                    reward, res=res, color=False)
+                reward_annotations = reward_annotations.astype('uint8')
+                gif = np.concatenate([reward_annotations, gif], 1)
+                gif = gif.astype('uint8')
+
+            imageio.mimsave(
+                os.path.join(gif_path, name+'.gif'), gif, fps=24)
 
         print("Done")
         # Set stove to train mode again.

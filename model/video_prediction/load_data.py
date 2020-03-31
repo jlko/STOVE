@@ -42,10 +42,9 @@ class StoveDataset(Dataset):
     subsample shorter sequences on which to train the model.
     """
 
-    def __init__(self, config, transform=None, test=False, data=None):
+    def __init__(self, config, test=False, data=None):
         """Load data and data info."""
         self.c = config
-        self.transform = transform
 
         if data is None:
             if test:
@@ -80,12 +79,24 @@ class StoveDataset(Dataset):
         # sets data specific entries in the config.
         height = self.total_img.shape[-2]
         width = self.total_img.shape[-1]
-        coord_lim = data['coord_lim']
-        r = data['r']
+        coord_lim = data.get('coord_lim', 10)
+        r = data.get('r', 1.3)
+        num_obj = self.total_data.shape[2]
+        num_frames = self.total_data.shape[1]
+
         self.data_info = {
             'width': width, 'height': height, 'r': r, 'coord_lim': coord_lim,
-            'action_space': action_space, 'action_conditioned': self.rl
+            'action_space': action_space, 'action_conditioned': self.rl,
+            'num_obj': num_obj, 'num_frames': num_frames,
             }
+
+        if self.c.debug_add_noise and not test:
+            print("Adding random normal noise.")
+            # from eval notebooks it looks like we have 0.02 noise on x and v
+            # in -1, 1 frame
+            #
+            noise = np.random.normal(size=self.total_data.shape)
+            self.total_data += 0.02 / 2 * coord_lim * noise
 
         if self.c.supairvised:
             # custom rescaling for sup(er/air)vised, only works for billiard?

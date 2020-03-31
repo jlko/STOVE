@@ -16,7 +16,7 @@ class RnnStates(nn.Module):
         self.lstm_size = 256
         img_size = self.c.channels * self.c.width * self.c.height
 
-        self.rnn = nn.LSTMCell(img_size, self.lstm_size)
+        self.rnn = nn.LSTM(img_size, self.lstm_size)
         self.fc1 = nn.Linear(self.lstm_size, 50)
         self.fc2 = nn.Linear(50, 2 * self.z_size)
 
@@ -39,20 +39,20 @@ class RnnStates(nn.Module):
         # flatten to (n4, cwh)
         x_flat = frames.flatten(start_dim=1)
         batch_size = x_flat.size(0)
+        
+        h_enc = torch.zeros(
+            1, batch_size, self.lstm_size,
+            device=self.c.device, dtype=self.c.dtype)
+        c_enc = torch.zeros(
+            1, batch_size, self.lstm_size,
+            device=self.c.device, dtype=self.c.dtype)
 
-        # init vars
-        zps = []
-        h_enc = torch.zeros(batch_size, self.lstm_size, device=self.c.device, dtype=self.c.dtype)
-        c_enc = torch.zeros(batch_size, self.lstm_size, device=self.c.device, dtype=self.c.dtype)
+        x_rep = x_flat.unsqueeze(0).repeat(self.c.num_obj, 1, 1)
+        output, h = self.rnn(x_rep, (h_enc, c_enc))
 
-        for _ in range(self.c.num_obj):
+        zps = output.transpose(0, 1)
+        zps = torch.sigmoid(self.fc1(zps))
+        zps = self.fc2(zps)
 
-            h_enc, c_enc = self.rnn(x_flat, (h_enc, c_enc))
-            zp = torch.sigmoid(self.fc1(h_enc))
-            # shape is (nT, 8) supair params per object
-            zp = self.fc2(zp)
-            zps.append(zp)
-
-        # stack along objects to (-1, o, 8)
-        zps = torch.stack(zps, 1)
         return zps
+

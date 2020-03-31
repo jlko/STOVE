@@ -35,17 +35,14 @@ def main(sh_args=None, restore=None, extras=None):
     test_dataset = StoveDataset(config, test=True)
     config = load_args(config, train_dataset.data_info)
 
+    # set up model
+    # loading is handled by Trainer here
+    stove = restore_model(restore, extras, config, load=False)
+
     if not config.supairvised:
-        from .video_prediction.stove import Stove
         from .video_prediction.train import Trainer
     else:
-        from .supairvised.supstove import SupStove as Stove
         from .supairvised.train import SupTrainer as Trainer
-
-    # set up model
-    stove = Stove(config)
-    stove = stove.to(config.device)
-    stove = stove.type(config.dtype)
 
     # trainer
     trainer = Trainer(config, stove, train_dataset, test_dataset)
@@ -54,35 +51,28 @@ def main(sh_args=None, restore=None, extras=None):
 
     return trainer
 
-
-def restore_model(restore, extras=None, load='checkpoint'):
+def restore_model(restore, extras=None, config=None, load=True):
     """Restore a model (and not the full trainer) from checkpoint.
 
     Args:
         restore (str): Path to run folder of model.
         extras (dict): Modify config from checkpoint with this. 'nolog' is
             enabled by default, but may be overridden.
-        load (str): Load checkpoint values for parameters. May set to None to
-            disable.
-
     Returns:
         model (Stove): Initialised model instance.
 
     """
     # default behaviour is to not crowd experiment directory
     # by activating nolog
-    if extras is None:
-        extras = {'nolog': True}
-
-    elif extras.get('nolog') is None:
-        extras.update({'nolog': True})
-
-    else:
-        pass
-
-    # initialise config from config.txt and extras
-    config = build_config(restore=restore, extras=extras)
-    config.checkpoint_path = os.path.join(restore, load)
+    if config is None:
+        if extras is None:
+            extras = {'nolog': True}
+        elif extras.get('nolog') is None:
+            extras.update({'nolog': True})
+        else:
+            pass
+        # initialise config from config.txt and extras
+        config = build_config(restore=restore, extras=extras)
 
     if not config.supairvised:
         from .video_prediction.stove import Stove
@@ -94,10 +84,10 @@ def restore_model(restore, extras=None, load='checkpoint'):
     stove = stove.to(config.device)
     stove = stove.type(config.dtype)
 
-    if stove.c.checkpoint_path is not None:
+    if load and stove.c.checkpoint_path is not None:
+        print("Load parameters in restore model.")
         checkpoint = torch.load(
             stove.c.checkpoint_path, map_location=stove.c.device)
-
         stove.load_state_dict(checkpoint['model_state_dict'])
 
     return stove
@@ -106,13 +96,24 @@ def restore_model(restore, extras=None, load='checkpoint'):
 def build_config(sh_args=None, restore=None, extras=None):
     """Set up a config."""
     config_update = {}
+    
+    if sh_args is not None:
+        sh_checkpoint = sh_args.get('checkpoint_path', None)
+    else:
+        sh_checkpoint = None
 
     # either run from comand line or restore from file
-    if restore is not None:
+    if (restore is not None) or (sh_checkpoint is not None):
+        # do not overwrite checkpoint paths from sh_args
+        if sh_checkpoint is not None:
+            restore = '/'.join(sh_checkpoint.split('/')[:-1])
+
         file = os.path.join(restore, 'config.txt')
         config_update.update(dict(pandas.read_csv(file).to_numpy()))
-        checkpoint_path = os.path.join(restore, 'checkpoint')
-        config_update.update({'checkpoint_path': checkpoint_path})
+
+        if restore is not None:
+            checkpoint_path = os.path.join(restore, 'checkpoints', 'ckpt')
+            config_update.update({'checkpoint_path': checkpoint_path})
 
     if sh_args is not None:
         config_update.update(sh_args)
@@ -163,6 +164,7 @@ def build_config(sh_args=None, restore=None, extras=None):
 
     # set seed if None, important for structure of region graph in random spn
     if config.random_seed is None:
+        print('Set new random seed.')
         config.random_seed = np.random.randint(low=0, high=1000)
 
     return config

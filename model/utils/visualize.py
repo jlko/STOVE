@@ -35,7 +35,8 @@ def draw_image(X, res, r=None, size=None):
             # this is smoothing kernel for ball intensity.
             # i.e. the further away we are from ball center, the lower
             # the intensity is.
-            A[t, :, :, i] += np.exp(-(((I - X[t, i, 0]) ** 2 +
+            idx = i % 3
+            A[t, :, :, idx] += np.exp(-(((I - X[t, i, 0]) ** 2 +
                                        (J - X[t, i, 1]) ** 2) /
                                       (r[i] ** 2)) ** 4)
         A[t][A[t] > 1] = 1
@@ -132,7 +133,12 @@ def animate_mpl(states, img_folder, prefix, presentation=False):
     imageio.mimsave(os.path.join(img_folder, prefix+'.gif'), images, fps=24)
 
 
-def get_reward_annotation(rewards, res):
+def rgb2gray(rgb):
+    """Convert rgb image to greyscale."""
+    return np.dot(rgb[...,:3], [0.2989, 0.5870, 0.1140])
+
+
+def get_reward_annotation(rewards, res, color=True):
     """If action_conditioned is true, add primitive reward vis to animated gifs."""
     h = 15
     annotations = np.zeros((rewards.size, h, res, 3))
@@ -141,6 +147,9 @@ def get_reward_annotation(rewards, res):
         d = ImageDraw.Draw(img)
         d.text((0, 0), '{:.2f}'.format(reward), fill=(255, 255, 0),)
         annotations[t] = np.array(img)
+
+    if not color:
+        annotations = rgb2gray(annotations)
     return annotations
 
 
