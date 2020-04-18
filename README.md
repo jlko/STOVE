@@ -1,5 +1,5 @@
 # Structured Object-Aware Physics Prediction for Video Modelling and Planning
-See [arxiv.org/1910.02425](https://arxiv.org/abs/1910.02425) for further information.
+See [arxiv.org/1910.02425](https://arxiv.org/abs/1910.02425) or [openreview.net/forum?id=B1e-kxSKDH](https://openreview.net/forum?id=B1e-kxSKDH) for further information.
 
 ## Example Animations
 ### Video Prediction
@@ -56,10 +56,10 @@ Only STOVE manages to generate visually convincing physically behavior over long
 
 
 The above shows the performance of the compared models in the interactive
-environments. The agents control the red ball and negative reward is given
-whenever the red ball collides with any of the other balls.
+environments. The agent controls the red ball and negative reward is given
+whenever the red ball collides with any other ball.
 STOVE is used as a world model, predicting future states, frames, and rewards.
-MCTS on STOVE can then be used for model-based control.
+MCTS can then be used on STOVE for model-based control.
 We compare to MCTS on the real environment states, as well as PPO on the
 environment states and raw images.
 Again, 10 different sequences of length 100 are shown.
@@ -86,7 +86,7 @@ heavily interacting objects.
 
 ## Other animations
 <img height="100" width="100" src="/figures/long_rollout.gif">
-Stove rollout is stable for possibly infinite amount of timesteps.
+STOVE's rollouts are stable for a possibly infinite number of timesteps.
 (Shown are 2000 frames of rollout and we tested up to 100000.)
 <img height="100" width="100" src="/figures/multiball_billiards.gif">
 All components of STOVE scale well to videos with larger number of objects!
@@ -94,11 +94,11 @@ All components of STOVE scale well to videos with larger number of objects!
 ## Citation
 Please cite our work here and at [arxiv.org/1910.02425](https://arxiv.org/abs/1910.02425) as 
 ```
-@article{kossen2019structured,
-    title={Structured Object-Aware Physics Prediction for Video Modeling and Planning},
-    author={Jannik Kossen and Karl Stelzner and Marcel Hussing and Claas Voelcker and Kristian Kersting},
-    year={2019},
-    journal={arXiv:1910.02425},
+@inproceedings{kossen2020structured,
+  title={Structured Object-Aware Physics Prediction for Video Modeling and Planning},
+  author={Kossen, Jannik and Stelzner, Karl and Hussing, Marcel and Voelcker, Claas and Kersting, Kristian},
+  booktitle={Proceedings of the International Conference on Learning Representations},
+  year={2020}
 }
 ```
 
