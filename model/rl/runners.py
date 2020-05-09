@@ -6,8 +6,8 @@ import torch.optim as optim
 
 from tensorboardX import SummaryWriter
 
-from agents import PPOAgent
-from rl_model import Policy
+from .agents import PPOAgent
+from .rl_model import Policy
 
 # TODO: this is ugly as hell but python sucks sometimes, should try to put everything in packages?
 import os,sys,inspect
@@ -15,8 +15,7 @@ current_dir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentfra
 parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, parent_dir)
 
-from billards_env import BillardsEnv, AvoidanceTask
-
+from model.envs.envs import BillardsEnv, AvoidanceTask
 
 class Runner():
     def __init__(

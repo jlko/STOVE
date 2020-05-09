@@ -30,6 +30,9 @@ if __name__ == '__main__':
     # Runs a completely random baseline of the environment agent.
     parser.add_argument('--random-baseline', dest='random_baseline',
                         action='store_true')
+    # Run PPO baseline
+    parser.add_argument('--PPO-baseline', dest='ppo_baseline',
+                        action='store_true')
 
     # Run supervised ablation
     parser.add_argument('--supervised', dest='supervised',
@@ -38,7 +41,6 @@ if __name__ == '__main__':
     # Create billiards with more than 3 balls.
     parser.add_argument('--multi-billiards', dest='multi_billiards',
                         action='store_true')
-
 
     args, _ = parser.parse_known_args()
     script_args = sys.argv[2:]
@@ -85,6 +87,10 @@ if __name__ == '__main__':
 
         run_name = script_args[0]
         main(run_name)
+
+    if args.ppo_baseline:
+        from model.rl.main_rl import main
+        main(script_args)
 
     if args.supervised:
         from model import main

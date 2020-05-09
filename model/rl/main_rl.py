@@ -16,17 +16,17 @@ current_dir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentfra
 parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, parent_dir) 
 
-from rl_model import Policy
-from agents import PPOAgent
-from runners import PPORunner
-from envs import BillardsEnv, AvoidanceTask, MaxDistanceTask, MinDistanceTask
-from vin import main as load_vin
+from .rl_model import Policy
+from .agents import PPOAgent
+from .runners import PPORunner
+from model.envs.envs import BillardsEnv, AvoidanceTask, MaxDistanceTask, MinDistanceTask
+from model.main import main  as load_vin
 
-def parse_args():
+def parse_args(args):
     parser = argparse.ArgumentParser(description='RL')
 
     parser.add_argument(
-            'experiment_id', 
+            '--experiment_id', 
             help='name of the experiment')
     parser.add_argument(
             '--env', default='billards', 
@@ -120,8 +120,7 @@ def parse_args():
             help='use the pretrained model as world model'
             )
 
-
-    args = parser.parse_args()
+    args = parser.parse_args(args)
 
     assert args.task in ['avoidance', 'maxdist', 'mindist']
     assert not(args.gym and args.use_states) 
@@ -177,6 +176,7 @@ def load_model():
     return model
 
 def main(args):
+    args = parse_args(args)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
@@ -263,6 +263,3 @@ def main(args):
     if not os.path.isfile(os.path.join(model_path, 'model' + str(i) + ".pt")):
         torch.save(actor_critic, os.path.join(model_path, 'model' + str(i) + ".pt"))
 
-if __name__ == "__main__":
-    args = parse_args()
-    main(args)
